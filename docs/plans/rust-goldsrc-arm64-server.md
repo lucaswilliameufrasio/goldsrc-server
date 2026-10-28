@@ -61,11 +61,33 @@ through an idempotent persistence boundary so restarts do not lose results.
 
 ## First PoC in this repository
 
-`poc/steam-server-query` is intentionally a loopback-only A2S_INFO query
-prototype. It validates a small piece of Steam server-browser interoperability
-without pretending to implement the GoldSrc game connection protocol. Its
-challenge value is fixed for deterministic local testing and is not suitable
-for exposure to a network.
+`poc/steam-server-query` is an A2S_INFO query prototype. It defaults to
+loopback and permits an explicitly selected private LAN or Tailscale IP for
+browser testing. It validates a small piece of Steam server-browser
+interoperability without pretending to implement the GoldSrc game connection
+protocol. Its challenge value is fixed for deterministic testing; do not expose
+it to the public internet.
+
+## Current progress (2026-10-28)
+
+- **Verified by user:** a Python standard-library UDP client completed the
+  loopback A2S_INFO challenge/response exchange and received a 75-byte server
+  info response. This verifies the query exchange only, not the official Steam
+  browser, Steam authentication, player connection, or gameplay.
+- **Implemented, not yet runtime-verified:** `LISTEN_ADDRESS` can select an
+  explicit loopback, RFC1918 LAN, Tailscale IPv4, or private/link-local IPv6
+  address. It defaults to `127.0.0.1:27025` and rejects wildcard and public IPs.
+- **Static checks passed:**
+  - `cargo fmt --manifest-path poc/steam-server-query/Cargo.toml -- --check`
+  - `cargo metadata --manifest-path poc/steam-server-query/Cargo.toml --no-deps --format-version 1`
+  - `git diff --check`
+- **Not run:** `cargo test` and a build after the bind-address change. The
+  official CS 1.6 Steam browser has not yet been tested against the PoC from a
+  second LAN/Tailscale device.
+
+Next: run the PoC bound to the Mac's private Tailscale or LAN IP, verify that the
+official Steam browser displays it from another device, and record that result
+before starting connection/sign-on work.
 
 ## Open validation items
 
