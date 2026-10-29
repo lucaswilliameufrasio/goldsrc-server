@@ -68,26 +68,34 @@ interoperability without pretending to implement the GoldSrc game connection
 protocol. Its challenge value is fixed for deterministic testing; do not expose
 it to the public internet.
 
-## Current progress (2026-10-28)
+## Current progress (2026-10-29)
 
 - **Verified by user:** a Python standard-library UDP client completed the
   loopback A2S_INFO challenge/response exchange and received a 75-byte server
   info response. This verifies the query exchange only, not the official Steam
   browser, Steam authentication, player connection, or gameplay.
-- **Implemented, not yet runtime-verified:** `LISTEN_ADDRESS` can select an
-  explicit loopback, RFC1918 LAN, Tailscale IPv4, or private/link-local IPv6
-  address. It defaults to `127.0.0.1:27025` and rejects wildcard and public IPs.
+- **Verified by user:** the unmodified CS 1.6 Steam browser on a second PC found
+  the PoC over Tailscale at `100.98.74.9:27025` and displayed
+  `CS 1.6 Rust Query PoC`. The real CS server at `100.98.74.9:27015` is a
+  separate server; the two ports serve different processes.
+- **Verified in the development environment:** UDP `100.98.74.9:27025` was
+  owned by `steam-server-query`, and an A2S_INFO challenge/response returned
+  the expected `CS 1.6 Rust Query PoC` name.
+- **Implemented:** `LISTEN_ADDRESS` can select an explicit loopback, RFC1918
+  LAN, Tailscale IPv4, or private/link-local IPv6 address. It defaults to
+  `127.0.0.1:27025` and rejects wildcard and public IPs.
 - **Static checks passed:**
   - `cargo fmt --manifest-path poc/steam-server-query/Cargo.toml -- --check`
   - `cargo metadata --manifest-path poc/steam-server-query/Cargo.toml --no-deps --format-version 1`
   - `git diff --check`
-- **Not run:** `cargo test` and a build after the bind-address change. The
-  official CS 1.6 Steam browser has not yet been tested against the PoC from a
-  second LAN/Tailscale device.
+- **Verified on 2026-10-29:** `cargo test --manifest-path
+  poc/steam-server-query/Cargo.toml` passed all 6 unit tests. A separate
+  `cargo build` was not run; `cargo test` compiled the test target.
 
-Next: run the PoC bound to the Mac's private Tailscale or LAN IP, verify that the
-official Steam browser displays it from another device, and record that result
-before starting connection/sign-on work.
+Next: begin the compatibility inventory: pin the official Steam client build
+and protocol baseline, then obtain legal local protocol fixtures from an
+unmodified client and a reference HLDS server before starting connection/sign-on
+work.
 
 ## Open validation items
 
