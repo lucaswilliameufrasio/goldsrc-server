@@ -4,4 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+packet-trace = []
+steam-auth = ["dep:libloading"]
+
 [dependencies]
+getrandom = "0.4.3"
+libloading = { version = "0.8.9", optional = true }
