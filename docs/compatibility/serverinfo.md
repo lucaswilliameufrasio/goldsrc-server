@@ -16,10 +16,13 @@ GoldSrc maxima.
 
 ## Local BSP inventory
 
-`poc/steam-server-query/examples/bsp_inventory.rs` reads only the 124-byte BSP
-v30 header, bounds-checks all 15 signed lump offsets and lengths against the
-opened file, and enforces a 256 MiB diagnostic limit. It does not load/validate
-the contents of lumps, compute a GoldSrc map CRC, or establish map safety.
+`poc/steam-server-query/examples/bsp_inventory.rs` reads the 124-byte BSP v30
+header, bounds-checks all 15 signed lump offsets and lengths against the opened
+file, and enforces a 256 MiB diagnostic limit. It streams lumps 1–14 in descriptor
+order (excluding entity lump 0) to calculate the multiplayer CS GoldSrc map CRC.
+GoldSrc stores the CRC-32 internal state without the conventional final inversion;
+it is not the CRC of the complete BSP. The tool does not validate lump contents
+or establish map safety. `crc32fast` is a development-only dependency.
 Empty lumps may have offset zero. This diagnostic intentionally does not reject
 overlapping nonempty lumps; overlap and contents require deeper validation before
 use by a game server.
@@ -32,13 +35,26 @@ cargo run --manifest-path poc/steam-server-query/Cargo.toml \
 ```
 
 Verified 2026-10-30 on the locally acquired reference HLDS `de_dust2.bsp`: the
-tool reported version 30, 15 in-bounds lumps, and entity lump length 9802.
-This is evidence for header inventory only, not a licensed redistribution grant,
-the world CRC, or a working sign-on fixture.
+tool reported version 30, 15 in-bounds lumps, entity lump length 9802, and raw
+GoldSrc world CRC `0x451b6da9`. Independently, Python zlib gave conventional
+final CRC `0xbae49256`, whose bitwise inverse is `0x451b6da9`.
+
+The decisive comparison used official Valve HLDS `engine_i486.so`, build 10211,
+in a rootless Debian container with networking disabled and the local HLDS tree
+mounted read-only. GDB stopped in `CRC_MapFile` during `+maxplayers 2 +sv_lan 1
++map de_dust2`; after successful return, the actual HLDS `worldmapCRC` pointer
+read `0x451b6da9`. The debugger terminated the isolated process. The ordering
+and lack of final inversion are also visible in
+[ReHLDS CRC_MapFile](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/crc.cpp)
+and its `SV_SpawnServer` call site.
+
+This match validates this specific installed reference map and HLDS build, not
+a redistribution grant or a working sign-on fixture. Single-player HLDS uses
+zero instead of the map CRC; the diagnostic computes the multiplayer CS map CRC.
 
 Before wiring this into live sign-on, acquire and inspect a reference HLDS
-sign-on exchange or validate against an independent protocol fixture; calculate
-map CRC and client-DLL MD5 from user-supplied licensed files; implement delta
+sign-on exchange or validate against an independent protocol fixture; connect
+the verified map CRC and calculate client-DLL MD5 from user-supplied licensed files; implement delta
 descriptions, movevars, extra info, resource lists and reliable fragmentation.
 Keep authentication fail-closed and current explicit disconnect until those
 prerequisites are met. Synthetic serialization tests alone do not establish

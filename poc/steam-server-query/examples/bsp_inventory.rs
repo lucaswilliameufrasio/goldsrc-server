@@ -1,7 +1,7 @@
 //! Read-only GoldSrc BSP v30 header inventory; no map bytes are redistributed.
 use std::env;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const LUMPS: usize = 15;
@@ -41,12 +41,33 @@ fn parse_header(header: &[u8], file_size: u64) -> io::Result<Vec<Lump>> {
     Ok(lumps)
 }
 
-fn inspect(path: &Path) -> io::Result<Vec<Lump>> {
+fn map_crc(reader: &mut (impl Read + Seek), file_size: u64) -> io::Result<(Vec<Lump>, u32)> {
+    let mut header = [0; HEADER_SIZE];
+    reader.seek(SeekFrom::Start(0))?;
+    reader.read_exact(&mut header)?;
+    let lumps = parse_header(&header, file_size)?;
+    let mut crc = crc32fast::Hasher::new();
+    let mut buffer = [0; 8192];
+    // Counter-Strike uses standard GoldSrc ordering: skip entity lump 0.
+    for lump in lumps.iter().skip(1) {
+        reader.seek(SeekFrom::Start(lump.offset))?;
+        let mut remaining = lump.length;
+        while remaining > 0 {
+            let amount = remaining.min(buffer.len() as u64) as usize;
+            reader.read_exact(&mut buffer[..amount])?;
+            crc.update(&buffer[..amount]);
+            remaining -= amount as u64;
+        }
+    }
+    // GoldSrc stores CRC32_Init/ProcessBuffer state directly as worldmapCRC;
+    // unlike a standard file CRC, it does not call CRC32_Final here.
+    Ok((lumps, !crc.finalize()))
+}
+
+fn inspect(path: &Path) -> io::Result<(Vec<Lump>, u32)> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
-    let mut header = [0; HEADER_SIZE];
-    file.read_exact(&mut header)?;
-    parse_header(&header, size)
+    map_crc(&mut file, size)
 }
 
 fn main() -> io::Result<()> {
@@ -64,8 +85,9 @@ fn main() -> io::Result<()> {
             "expected one map path",
         ));
     }
-    let lumps = inspect(Path::new(&path))?;
+    let (lumps, crc) = inspect(Path::new(&path))?;
     println!("GoldSrc BSP version=30 lumps={}", lumps.len());
+    println!("GoldSrc CS map CRC32=0x{crc:08x}");
     for (index, lump) in lumps.iter().enumerate() {
         println!("lump={index} offset={} length={}", lump.offset, lump.length);
     }
@@ -131,7 +153,32 @@ mod tests {
         output.write_all(&header()).unwrap();
         output.write_all(&[0; 4]).unwrap();
         drop(output);
-        assert_eq!(inspect(&file).unwrap().len(), 15);
+        assert_eq!(inspect(&file).unwrap().0.len(), 15);
         std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn crc_uses_lump_index_order_and_skips_entities_and_padding() {
+        let mut data = header().to_vec();
+        // Physical order differs from logical lump order; excluded entities and
+        // unreferenced bytes must not influence the checksum.
+        data[12..16].copy_from_slice(&132_i32.to_le_bytes());
+        data[16..20].copy_from_slice(&3_i32.to_le_bytes());
+        data[20..24].copy_from_slice(&128_i32.to_le_bytes());
+        data[24..28].copy_from_slice(&4_i32.to_le_bytes());
+        data.extend_from_slice(b"ENT!5678123");
+        let size = data.len() as u64;
+        let crc = map_crc(&mut io::Cursor::new(&data), size).unwrap().1;
+        assert_eq!(crc, !crc32fast::hash(b"1235678"));
+        data[HEADER_SIZE] ^= 1;
+        assert_eq!(map_crc(&mut io::Cursor::new(&data), size).unwrap().1, crc);
+        data[128] ^= 1;
+        assert_ne!(map_crc(&mut io::Cursor::new(&data), size).unwrap().1, crc);
+        assert!(map_crc(&mut io::Cursor::new(&data[..data.len() - 1]), size).is_err());
+    }
+
+    #[test]
+    fn standard_crc32_check_value() {
+        assert_eq!(crc32fast::hash(b"123456789"), 0xcbf43926);
     }
 }

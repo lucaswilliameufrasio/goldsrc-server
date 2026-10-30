@@ -155,6 +155,11 @@ it to the public internet.
   lump descriptors of the locally acquired `de_dust2.bsp`. This reads no map
   content and does not compute the world CRC or validate BSP internals. See
   [serverinfo preparation](../compatibility/serverinfo.md).
+- **Verified against Valve HLDS (2026-10-30):** the Rust diagnostic computed
+  `0x451b6da9` as the multiplayer CS world CRC for reference `de_dust2.bsp`;
+  a debugger observed the same value returned by isolated HLDS build 10211
+  `CRC_MapFile`. This is not conventional finalized CRC-32 and is not yet
+  encoded into or sent as `svc_serverinfo`.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
