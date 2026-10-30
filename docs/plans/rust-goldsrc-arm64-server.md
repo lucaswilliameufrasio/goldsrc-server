@@ -166,6 +166,11 @@ it to the public internet.
   and a zero-filled 16-byte serverinfo DLL field. The digest tool does not
   unconditionally substitute the MD5 into live sign-on; see
   [serverinfo preparation](../compatibility/serverinfo.md).
+- **Verified against Valve HLDS (2026-10-30):** the serverinfo encoder applies
+  the correct per-player `COM_Munge3` transformation to the raw world CRC.
+  For the reference map, slots 0, 1 and 31 match the actual HLDS function.
+  The BSP diagnostic now assembles synthetic serverinfo from the measured map
+  CRC and observed zero DLL field; no serverinfo is sent to clients yet.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48

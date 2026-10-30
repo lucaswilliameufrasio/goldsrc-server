@@ -8,11 +8,31 @@ for actual sign-on is `svc_serverinfo`.
 encoder for the `svc_serverinfo` fields, based on the field order in
 [ReHLDS SV_SendServerinfo](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/sv_main.cpp).
 The encoder is compiled only in tests: it is **not sent to clients**. Its API
-requires callers to supply the already-encoded world CRC, real client-DLL MD5,
+requires callers to supply the raw world CRC, client-DLL field,
 map model name, and session-specific values. It does not invent those fields,
 compute the CRC/MD5, load a map, implement delta schemas, or transfer resources.
 The fixed string bounds are conservative development limits, not established
 GoldSrc maxima.
+
+The encoder now applies `COM_Munge3` to the raw world CRC using
+`(-1 - player_index) & 255`, as the HLDS `SV_SendServerinfo` does. With the
+reference world CRC `0x451b6da9`, the official HLDS build 10211 function
+`COM_Munge3` was invoked in a network-isolated, read-only GDB session and
+returned `0x562d43e0`, `0x572d43e1`, and `0x492d43ff` for zero-based slots 0,
+1, and 31 respectively. Rust unit tests assert these three independent values
+and their little-endian positions in `svc_serverinfo` with the observed zero
+DLL field. This verifies the transform and field layout, not full sign-on.
+
+To inspect the end-to-end map CRC → slot transform → encoded serverinfo offline:
+
+```sh
+cargo run --manifest-path poc/steam-server-query/Cargo.toml --example bsp_inventory -- \
+  fixtures/local/reference-hlds/cstrike/maps/de_dust2.bsp --serverinfo-slot 0
+```
+
+The printed bytes are explicitly **synthetic and not sent**: spawn count,
+hostname and capacity are diagnostic placeholders, the DLL field reflects the
+observed reference setting, and the rest of the sign-on message is absent.
 
 ## Reference client DLL digest
 

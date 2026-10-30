@@ -4,7 +4,8 @@ use std::io;
 /// Explicitly supplied world/client metadata; no implicit map or executable data.
 pub struct ServerInfo<'a> {
     pub spawn_count: u32,
-    pub encoded_world_crc: u32,
+    /// GoldSrc's unfinalized multiplayer map CRC, before the player transform.
+    pub world_crc: u32,
     pub client_dll_md5: [u8; 16],
     pub max_players: u8,
     pub player_index: u8,
@@ -52,7 +53,8 @@ impl ServerInfo<'_> {
         message.push(11); // svc_serverinfo
         message.extend_from_slice(&48_u32.to_le_bytes());
         message.extend_from_slice(&self.spawn_count.to_le_bytes());
-        message.extend_from_slice(&self.encoded_world_crc.to_le_bytes());
+        message
+            .extend_from_slice(&encode_world_crc(self.world_crc, self.player_index).to_le_bytes());
         message.extend_from_slice(&self.client_dll_md5);
         message.extend_from_slice(&[self.max_players, self.player_index, self.game_type]);
         for value in fields {
@@ -64,6 +66,18 @@ impl ServerInfo<'_> {
     }
 }
 
+/// Encode the raw world CRC using GoldSrc's COM_Munge3, with key (-1 - slot) & 255.
+/// This is protocol obfuscation, not a cryptographic integrity guarantee.
+fn encode_world_crc(world_crc: u32, player_index: u8) -> u32 {
+    const TABLE: [u8; 4] = [0x20, 0x07, 0x13, 0x61];
+    let key = u32::from(u8::MAX - player_index);
+    let mut bytes = (world_crc ^ !key).swap_bytes().to_le_bytes();
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte ^= 0xa5 | ((index as u8) << index) | index as u8 | TABLE[index];
+    }
+    u32::from_le_bytes(bytes) ^ key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,7 +85,7 @@ mod tests {
     fn info() -> ServerInfo<'static> {
         ServerInfo {
             spawn_count: 2,
-            encoded_world_crc: 0x44332211,
+            world_crc: 0x451b6da9,
             client_dll_md5: [0x42; 16],
             max_players: 2,
             player_index: 1,
@@ -86,10 +100,31 @@ mod tests {
 
     #[test]
     fn serializes_known_serverinfo_fields_in_wire_order() {
-        let mut expected = vec![11, 48, 0, 0, 0, 2, 0, 0, 0, 0x11, 0x22, 0x33, 0x44];
+        let mut expected = vec![11, 48, 0, 0, 0, 2, 0, 0, 0, 0xe1, 0x43, 0x2d, 0x57];
         expected.extend_from_slice(&[0x42; 16]);
         expected.extend_from_slice(b"\x02\x01\x01cstrike\0test\0maps/test.bsp\0\0\0");
         assert_eq!(info().encode().unwrap(), expected);
+    }
+
+    #[test]
+    fn matches_official_hlds_munge3_for_multiple_player_slots() {
+        assert_eq!(encode_world_crc(0x451b6da9, 0), 0x562d43e0);
+        assert_eq!(encode_world_crc(0x451b6da9, 1), 0x572d43e1);
+        assert_eq!(encode_world_crc(0x451b6da9, 31), 0x492d43ff);
+    }
+
+    #[test]
+    fn encoding_serverinfo_uses_player_slot_and_real_reference_inputs() {
+        let mut value = info();
+        value.max_players = 32;
+        value.client_dll_md5 = [0; 16]; // observed clientcrccheck=false
+        for (slot, encoded) in [(0, 0x562d43e0_u32), (1, 0x572d43e1), (31, 0x492d43ff)] {
+            value.player_index = slot;
+            let wire = value.encode().unwrap();
+            assert_eq!(&wire[9..13], &encoded.to_le_bytes());
+            assert_eq!(&wire[13..29], &[0; 16]);
+            assert_eq!(wire[30], slot);
+        }
     }
 
     #[test]

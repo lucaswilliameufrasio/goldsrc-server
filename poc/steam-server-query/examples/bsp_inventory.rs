@@ -4,6 +4,9 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
+#[path = "../src/serverinfo.rs"]
+mod serverinfo;
+
 const LUMPS: usize = 15;
 const HEADER_SIZE: usize = 4 + LUMPS * 8;
 const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
@@ -76,20 +79,77 @@ fn main() -> io::Result<()> {
     let path = args.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: bsp_inventory <local-map.bsp>",
+            "usage: bsp_inventory <local-map.bsp> [--serverinfo-slot <0..31>]",
         )
     })?;
-    if args.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected one map path",
-        ));
-    }
+    let slot = match args.next() {
+        None => None,
+        Some(flag) if flag == "--serverinfo-slot" => {
+            let raw = args
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing slot"))?;
+            let slot = raw
+                .to_str()
+                .and_then(|s| s.parse::<u8>().ok())
+                .filter(|value| *value < 32)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "slot must be 0..31"))?;
+            if args.next().is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected argument",
+                ));
+            }
+            Some(slot)
+        }
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown option",
+            ));
+        }
+    };
     let (lumps, crc) = inspect(Path::new(&path))?;
     println!("GoldSrc BSP version=30 lumps={}", lumps.len());
     println!("GoldSrc CS map CRC32=0x{crc:08x}");
     for (index, lump) in lumps.iter().enumerate() {
         println!("lump={index} offset={} length={}", lump.offset, lump.length);
+    }
+    if let Some(slot) = slot {
+        let name = Path::new(&path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| {
+                s.ends_with(".bsp")
+                    && s.len() <= 64
+                    && s.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "map name must be a safe ASCII .bsp filename",
+                )
+            })?;
+        let model = format!("maps/{name}");
+        let payload = serverinfo::ServerInfo {
+            spawn_count: 1,
+            world_crc: crc,
+            client_dll_md5: [0; 16],
+            max_players: 32,
+            player_index: slot,
+            game_type: 1,
+            game_dir: "cstrike",
+            hostname: "Diagnostic only",
+            world_model: &model,
+            map_cycle: "",
+            secure: false,
+        }
+        .encode()?;
+        print!("synthetic serverinfo (not sent; placeholder spawn/hostname) hex=");
+        for byte in payload {
+            print!("{byte:02x}");
+        }
+        println!();
     }
     Ok(())
 }
