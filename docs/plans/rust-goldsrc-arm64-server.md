@@ -151,6 +151,10 @@ it to the public internet.
   layout tests; see [serverinfo preparation](../compatibility/serverinfo.md).
   Actual map CRC, client DLL digest, delta descriptions, resource lists and
   fragmentation remain prerequisites before sending it to the official client.
+- **Verified locally:** `bsp_inventory` inspected the v30 header and 15 bounded
+  lump descriptors of the locally acquired `de_dust2.bsp`. This reads no map
+  content and does not compute the world CRC or validate BSP internals. See
+  [serverinfo preparation](../compatibility/serverinfo.md).
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
