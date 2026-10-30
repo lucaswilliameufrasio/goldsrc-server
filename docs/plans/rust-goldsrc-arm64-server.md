@@ -160,6 +160,12 @@ it to the public internet.
   a debugger observed the same value returned by isolated HLDS build 10211
   `CRC_MapFile`. This is not conventional finalized CRC-32 and is not yet
   encoded into or sent as `svc_serverinfo`.
+- **Verified against Valve HLDS (2026-10-30):** local reference `client.dll`
+  MD5 is `cf385dcc19e71511ca48f58c68d14278`, matching HLDS `MD5_Hash_File`.
+  However, the observed normal CS reference startup had `clientcrccheck=false`
+  and a zero-filled 16-byte serverinfo DLL field. The digest tool does not
+  unconditionally substitute the MD5 into live sign-on; see
+  [serverinfo preparation](../compatibility/serverinfo.md).
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48

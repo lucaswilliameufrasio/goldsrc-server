@@ -14,6 +14,36 @@ compute the CRC/MD5, load a map, implement delta schemas, or transfer resources.
 The fixed string bounds are conservative development limits, not established
 GoldSrc maxima.
 
+## Reference client DLL digest
+
+On 2026-10-30, `client_dll_inventory` read the local HLDS reference
+`cstrike/cl_dlls/client.dll` (1,184,616 bytes) and computed MD5
+`cf385dcc19e71511ca48f58c68d14278`, matching both `md5sum` and the official
+HLDS build 10211 `MD5_Hash_File` output. For that last comparison, GDB called the
+HLDS function against the local DLL with no seed, in the same read-only,
+network-isolated rootless container used for the map CRC; it returned success
+and the same 16 bytes. This DLL is a server-distributed reference file, not
+evidence of the exact build or DLL on the user's official client PC.
+
+**Important:** at `CRC_MapFile` during normal reference-server startup, GDB
+observed `gmodinfo.clientcrccheck = false` and `sv.clientdllmd5` as 16 zero
+bytes. The DLL's actual MD5 is therefore *not* the value this reference startup
+would put in `svc_serverinfo`. The HLDS only invokes that DLL hash path when
+the client CRC check is enabled. Do not unconditionally use the digest or claim
+this observation proves every mod/build or configuration behaves identically.
+MD5 here is a legacy compatibility field, not a security or trust guarantee.
+
+Reproduce the local read-only digest without committing the DLL:
+
+```sh
+cargo run --manifest-path poc/steam-server-query/Cargo.toml \
+  --example client_dll_inventory -- fixtures/local/reference-hlds/cstrike/cl_dlls/client.dll
+```
+
+The tool uses RustCrypto `md-5` as a dev dependency, streams at most 256 MiB,
+rejects empty/nonregular files, and does not embed or redistribute the DLL. It
+does not select the runtime serverinfo value or activate client CRC checking.
+
 ## Local BSP inventory
 
 `poc/steam-server-query/examples/bsp_inventory.rs` reads the 124-byte BSP v30
@@ -53,8 +83,9 @@ a redistribution grant or a working sign-on fixture. Single-player HLDS uses
 zero instead of the map CRC; the diagnostic computes the multiplayer CS map CRC.
 
 Before wiring this into live sign-on, acquire and inspect a reference HLDS
-sign-on exchange or validate against an independent protocol fixture; connect
-the verified map CRC and calculate client-DLL MD5 from user-supplied licensed files; implement delta
+sign-on exchange or validate against an independent protocol fixture; encode
+the verified map CRC for the player slot, choose the client-DLL field according
+to the observed configuration, and implement delta
 descriptions, movevars, extra info, resource lists and reliable fragmentation.
 Keep authentication fail-closed and current explicit disconnect until those
 prerequisites are met. Synthetic serialization tests alone do not establish
