@@ -101,6 +101,116 @@ impl Signon<'_> {
     }
 }
 
+pub struct UserMessage<'a> {
+    pub id: u8,
+    /// -1 denotes variable size; other sizes are encoded as one byte.
+    pub size: i16,
+    pub name: &'a str,
+}
+
+pub struct ClientUpdate<'a> {
+    pub slot: u8,
+    pub userid: u32,
+    pub userinfo: &'a str,
+    /// Caller-supplied protocol digest; this module never fabricates one.
+    pub digest: [u8; 16],
+}
+
+pub struct NewResponse<'a> {
+    pub serverinfo: Signon<'a>,
+    pub user_messages: &'a [UserMessage<'a>],
+    pub full_server_info: &'a str,
+    pub clients: &'a [ClientUpdate<'a>],
+}
+
+/// Validate key/value encoding and remove private keys from player updates.
+fn checked_info(input: &str, strip_private: bool) -> io::Result<String> {
+    if input.len() > 511
+        || input
+            .bytes()
+            .any(|b| b < 32 || b == 127 || b == b'"' || b == b';')
+    {
+        return Err(Error::new(ErrorKind::InvalidInput, "invalid info string"));
+    }
+    if input.is_empty() {
+        return Ok(String::new());
+    }
+    let rest = input
+        .strip_prefix('\\')
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid info string"))?;
+    let mut parts = rest.split('\\');
+    let mut output = String::new();
+    while let Some(key) = parts.next() {
+        let value = parts
+            .next()
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid info string"))?;
+        if key.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidInput, "invalid info key"));
+        }
+        if !strip_private || !key.starts_with('_') {
+            output.push('\\');
+            output.push_str(key);
+            output.push('\\');
+            output.push_str(value);
+        }
+    }
+    Ok(output)
+}
+
+impl NewResponse<'_> {
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        if self.user_messages.len() > 192 || self.clients.len() > 32 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "too many sign-on records",
+            ));
+        }
+        let full_info = checked_info(self.full_server_info, false)?;
+        let mut out = self.serverinfo.encode()?;
+        let mut ids = [false; 256];
+        for message in self.user_messages {
+            if message.id < 64
+                || ids[usize::from(message.id)]
+                || !(-1..=255).contains(&message.size)
+                || message.name.is_empty()
+                || message.name.len() > 15
+                || !message.name.bytes().all(|b| b.is_ascii_graphic())
+            {
+                return Err(Error::new(ErrorKind::InvalidInput, "invalid user message"));
+            }
+            ids[usize::from(message.id)] = true;
+            out.extend_from_slice(&[39, message.id, message.size as u8]);
+            let mut name = [0_u8; 16];
+            name[..message.name.len()].copy_from_slice(message.name.as_bytes());
+            out.extend_from_slice(&name);
+        }
+        out.push(9); // svc_stufftext
+        out.extend_from_slice(b"fullserverinfo \"");
+        out.extend_from_slice(full_info.as_bytes());
+        out.extend_from_slice(b"\"\n\0");
+        let mut slots = [false; 32];
+        for client in self.clients {
+            if client.slot >= self.serverinfo.info.max_players || slots[usize::from(client.slot)] {
+                return Err(Error::new(ErrorKind::InvalidInput, "invalid client slot"));
+            }
+            slots[usize::from(client.slot)] = true;
+            let info = checked_info(client.userinfo, true)?;
+            out.extend_from_slice(&[13, client.slot]); // svc_updateuserinfo
+            out.extend_from_slice(&client.userid.to_le_bytes());
+            out.extend_from_slice(info.as_bytes());
+            out.push(0);
+            out.extend_from_slice(&client.digest);
+        }
+        if out.len() > MAX_MESSAGE {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "sign-on message too large",
+            ));
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -146,6 +256,97 @@ pub(crate) mod tests {
         let mut delta = vec![0; MAX_MESSAGE];
         delta[0] = 14;
         assert!(synthetic(&delta).encode().is_err());
+    }
+
+    #[test]
+    fn new_response_filters_private_info_and_rejects_unsafe_records() {
+        let registrations = [UserMessage {
+            id: 64,
+            size: -1,
+            name: "Probe",
+        }];
+        let clients = [ClientUpdate {
+            slot: 0,
+            userid: 42,
+            userinfo: "\\name\\tester\\_secret\\fake\\rate\\25000",
+            digest: [9; 16],
+        }];
+        let new = NewResponse {
+            serverinfo: synthetic(&[14]),
+            user_messages: &registrations,
+            full_server_info: "\\hostname\\test",
+            clients: &clients,
+        };
+        let bytes = new.encode().unwrap();
+        assert!(!bytes.windows(7).any(|s| s == b"_secret"));
+        let public_info = b"\\name\\tester\\rate\\25000";
+        assert!(bytes.windows(public_info.len()).any(|s| s == public_info));
+        assert!(checked_info("\\name\\x\\orphan", true).is_err());
+        assert!(checked_info("\\name\\bad\"\n", true).is_err());
+        let duplicate = [
+            UserMessage {
+                id: 64,
+                size: 1,
+                name: "A",
+            },
+            UserMessage {
+                id: 64,
+                size: 2,
+                name: "B",
+            },
+        ];
+        assert!(
+            NewResponse {
+                serverinfo: synthetic(&[14]),
+                user_messages: &duplicate,
+                full_server_info: "",
+                clients: &[]
+            }
+            .encode()
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires synthetic output captured from the local HLDS"]
+    fn new_response_tail_matches_local_hlds() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let expected =
+            std::fs::read(std::path::Path::new(&root).join("hlds-new-tail-synthetic-v2.bin"))
+                .unwrap();
+        let messages = [
+            UserMessage {
+                id: 64,
+                size: -1,
+                name: "Probe",
+            },
+            UserMessage {
+                id: 65,
+                size: 5,
+                name: "Test",
+            },
+        ];
+        let clients = [ClientUpdate {
+            slot: 0,
+            userid: 42,
+            userinfo: "\\name\\tester\\_secret\\fake\\rate\\25000",
+            digest: [
+                0x3b, 0x5d, 0x3c, 0x7d, 0x20, 0x7e, 0x37, 0xdc, 0xee, 0xed, 0xd3, 0x01, 0xe3, 0x5e,
+                0x2e, 0x58,
+            ],
+        }];
+        let base = synthetic(&[14]).encode().unwrap();
+        let actual = NewResponse {
+            serverinfo: synthetic(&[14]),
+            user_messages: &messages,
+            full_server_info: "\\hostname\\test",
+            clients: &clients,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(&actual[..base.len()], &base);
+        assert_eq!(&actual[base.len()..], &expected);
     }
 
     #[test]

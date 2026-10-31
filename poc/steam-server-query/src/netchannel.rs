@@ -748,9 +748,25 @@ mod tests {
             &root.join("hlds-delta-fields-build10211.tsv"),
         )
         .unwrap();
-        let expected = crate::signon::tests::synthetic(&delta.bytes)
-            .encode()
-            .unwrap();
+        let messages = [crate::signon::UserMessage {
+            id: 64,
+            size: -1,
+            name: "Probe",
+        }];
+        let clients = [crate::signon::ClientUpdate {
+            slot: 0,
+            userid: 1,
+            userinfo: "\\name\\tester",
+            digest: [0; 16],
+        }];
+        let expected = crate::signon::NewResponse {
+            serverinfo: crate::signon::tests::synthetic(&delta.bytes),
+            user_messages: &messages,
+            full_server_info: "\\hostname\\test",
+            clients: &clients,
+        }
+        .encode()
+        .unwrap();
         let now = Instant::now();
         let mut sessions = Sessions::new();
         assert!(

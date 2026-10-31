@@ -154,8 +154,32 @@ sign-on. Existing Steam authentication and cleanup behavior are unchanged.
 `SV_SendServerinfo` message: optional print banner, serverinfo, extra info,
 delta descriptions, movevars, CD track and view entity. It accepts explicit
 session data and movevars; it does not infer live settings, validate a delta
-byte stream, transmit anything, or implement later `SV_New_f` messages such as
-user registrations and full server information. Resource exchange is absent.
+byte stream or transmit anything. Resource exchange is absent.
+
+The test-only `NewResponse` appends user-message registrations, the
+`fullserverinfo` command and explicitly supplied client updates. Its userinfo
+filter strips keys starting with `_`, rejects control characters and unsafe
+command delimiters, and requires the caller to provide each 16-byte client
+digest. This is a conservative subset of GoldSrc info strings, not a guarantee
+that all possible other keys are non-sensitive. The caller must supply only
+appropriate server and public player information. No real player data was used.
+
+For the local HLDS build 10211, a synthetic two-registration, one-player tail
+was generated using `examples/hlds_new_tail.gdb` in the same isolated container;
+Rust matched all 118 bytes including removal of a fake `_secret` key. The
+observed HLDS `SV_SendUserReg` has one argument and reads `sv_gpNewUserMsgs`,
+unlike the two-argument ReHLDS implementation consulted during investigation.
+This direct function test does not prove which registration list is selected
+at every actual `SV_New_f` lifecycle point or implement game-DLL connection
+callbacks. The output capture is ignored at
+`fixtures/local/hlds-new-tail-synthetic-v2.bin`; the GDB script refuses to
+overwrite it.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  new_response_tail_matches_local_hlds -- --ignored
+```
 
 On 2026-10-31, GDB called the official HLDS build 10211
 `SV_WriteMovevarsToClient` and `SV_SendServerinfo` at `SV_ActivateServer` in
@@ -189,6 +213,6 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
    for actual entity updates. The current prepared descriptions are not sent.
 3. Validate loss/retransmission and the complete exchange against the official
    client; implement any needed compression and incoming streams.
-4. Supply validated live map/client/session data and remaining `SV_New_f`
-   messages and resource manifests; only then enable an opt-in sign-on test
-   with the official client.
+4. Establish registration lifecycle and game-DLL callback behavior, and supply
+   validated live map/client/session data and resource manifests; only then
+   enable an opt-in sign-on test with the official client.
