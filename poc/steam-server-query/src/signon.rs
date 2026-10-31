@@ -120,6 +120,8 @@ pub struct NewResponse<'a> {
     pub serverinfo: Signon<'a>,
     pub user_messages: &'a [UserMessage<'a>],
     pub full_server_info: &'a str,
+    pub allow_shaders: bool,
+    pub allow_autoaim: bool,
     pub clients: &'a [ClientUpdate<'a>],
 }
 
@@ -188,6 +190,18 @@ impl NewResponse<'_> {
         out.extend_from_slice(b"fullserverinfo \"");
         out.extend_from_slice(full_info.as_bytes());
         out.extend_from_slice(b"\"\n\0");
+        out.push(9);
+        out.extend_from_slice(if self.allow_shaders {
+            b"allow_shaders 1\n\0"
+        } else {
+            b"allow_shaders 0\n\0"
+        });
+        out.push(9);
+        out.extend_from_slice(if self.allow_autoaim {
+            b"allow_autoaim 1\n\0"
+        } else {
+            b"allow_autoaim 0\n\0"
+        });
         let mut slots = [false; 32];
         for client in self.clients {
             if client.slot >= self.serverinfo.info.max_players || slots[usize::from(client.slot)] {
@@ -275,6 +289,8 @@ pub(crate) mod tests {
             serverinfo: synthetic(&[14]),
             user_messages: &registrations,
             full_server_info: "\\hostname\\test",
+            allow_shaders: true,
+            allow_autoaim: false,
             clients: &clients,
         };
         let bytes = new.encode().unwrap();
@@ -300,6 +316,8 @@ pub(crate) mod tests {
                 serverinfo: synthetic(&[14]),
                 user_messages: &duplicate,
                 full_server_info: "",
+                allow_shaders: false,
+                allow_autoaim: false,
                 clients: &[]
             }
             .encode()
@@ -313,7 +331,7 @@ pub(crate) mod tests {
         let root =
             std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
         let expected =
-            std::fs::read(std::path::Path::new(&root).join("hlds-new-tail-synthetic-v2.bin"))
+            std::fs::read(std::path::Path::new(&root).join("hlds-new-tail-synthetic-v3.bin"))
                 .unwrap();
         let messages = [
             UserMessage {
@@ -341,6 +359,8 @@ pub(crate) mod tests {
             serverinfo: synthetic(&[14]),
             user_messages: &messages,
             full_server_info: "\\hostname\\test",
+            allow_shaders: true,
+            allow_autoaim: false,
             clients: &clients,
         }
         .encode()

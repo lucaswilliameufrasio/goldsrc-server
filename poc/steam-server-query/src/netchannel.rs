@@ -763,6 +763,8 @@ mod tests {
             serverinfo: crate::signon::tests::synthetic(&delta.bytes),
             user_messages: &messages,
             full_server_info: "\\hostname\\test",
+            allow_shaders: false,
+            allow_autoaim: false,
             clients: &clients,
         }
         .encode()

@@ -9,6 +9,8 @@ mod fragments;
 #[cfg(feature = "steam-auth")]
 mod netchannel;
 #[cfg(test)]
+mod resources;
+#[cfg(test)]
 mod serverinfo;
 #[cfg(test)]
 mod signon;

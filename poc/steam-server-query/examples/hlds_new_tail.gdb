@@ -1,7 +1,7 @@
 # Synthetic inputs only. Run in a network-isolated HLDS container without clients.
 python
 import os
-if os.path.exists('/out/hlds-new-tail-synthetic-v2.bin'):
+if os.path.exists('/out/hlds-new-tail-synthetic-v3.bin'):
     raise RuntimeError('refusing to overwrite the existing capture')
 end
 set breakpoint pending on
@@ -23,7 +23,11 @@ set net_message.cursize = 0
 call (void)SV_SendUserReg(&net_message)
 call (void)MSG_WriteByte(&net_message,9)
 call (void)MSG_WriteString(&net_message,"fullserverinfo \"\\hostname\\test\"\n")
+call (void)MSG_WriteByte(&net_message,9)
+call (void)MSG_WriteString(&net_message,"allow_shaders 1\n")
+call (void)MSG_WriteByte(&net_message,9)
+call (void)MSG_WriteString(&net_message,"allow_autoaim 0\n")
 call (void)SV_FullClientUpdate(&svs.clients[0], &net_message)
 p net_message.cursize
-dump binary memory /out/hlds-new-tail-synthetic-v2.bin net_message.data net_message.data+net_message.cursize
+dump binary memory /out/hlds-new-tail-synthetic-v3.bin net_message.data net_message.data+net_message.cursize
 quit

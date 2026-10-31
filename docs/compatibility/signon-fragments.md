@@ -166,14 +166,20 @@ appropriate server and public player information. No real player data was used.
 
 For the local HLDS build 10211, a synthetic two-registration, one-player tail
 was generated using `examples/hlds_new_tail.gdb` in the same isolated container;
-Rust matched all 118 bytes including removal of a fake `_secret` key. The
-observed HLDS `SV_SendUserReg` has one argument and reads `sv_gpNewUserMsgs`,
-unlike the two-argument ReHLDS implementation consulted during investigation.
-This direct function test does not prove which registration list is selected
-at every actual `SV_New_f` lifecycle point or implement game-DLL connection
-callbacks. The output capture is ignored at
-`fixtures/local/hlds-new-tail-synthetic-v2.bin`; the GDB script refuses to
-overwrite it.
+Rust matched all 154 bytes including removal of a fake `_secret` key. After the
+original 118-byte comparison, disassembly of the official `SV_New_f` revealed
+two additional `svc_stufftext` messages, `allow_shaders` and `allow_autoaim`;
+both are now explicit inputs and included in this new comparison. The output
+capture is ignored at `fixtures/local/hlds-new-tail-synthetic-v3.bin`.
+
+At world precache the debugger observed `RegUserMsg("VoiceMask", 8)` called
+from the CS game DLL's voice manager initialization. At the start and end of
+`SV_ActivateServer`, the consolidated `sv_gpUserMsgs` was null while
+`sv_gpNewUserMsgs` was non-null. Disassembly of `SV_New_f` shows it walks the
+consolidated list before invoking the game DLL's `ClientConnect`; the standalone
+one-argument `SV_SendUserReg` instead reads `sv_gpNewUserMsgs`. Registration
+promotion and callback outcomes during a real client connection remain
+unverified; no fake Steam approval or game connection was performed here.
 
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
@@ -205,6 +211,23 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   prepared_signon_reassembles_via_fragment_channel -- --ignored
 ```
 
+## Resource-message subset
+
+`src/resources.rs` is compiled only in tests and encodes `svc_resourcerequest`
+and `svc_resourcelist` for explicit resources without a download URL, custom
+hashes, reserved data or consistency entries. Unsupported flags are rejected;
+the encoder does not scan a map or filesystem, transfer resources, process a
+client response, or provide live negotiation. In an isolated HLDS 10211 process
+`examples/hlds_resources.gdb` supplied two synthetic entries and called
+`SV_SendResources`. The generated Rust result matched the captured 54 bytes.
+That capture stays ignored at `fixtures/local/hlds-resources-synthetic.bin`.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  resource_list_matches_hlds -- --ignored
+```
+
 ## Required subsequent work
 
 1. Establish redistribution rights before committing any derived vectors.
@@ -213,6 +236,6 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
    for actual entity updates. The current prepared descriptions are not sent.
 3. Validate loss/retransmission and the complete exchange against the official
    client; implement any needed compression and incoming streams.
-4. Establish registration lifecycle and game-DLL callback behavior, and supply
+4. Establish registration promotion and client callback behavior, and supply
    validated live map/client/session data and resource manifests; only then
    enable an opt-in sign-on test with the official client.
