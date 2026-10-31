@@ -1,6 +1,7 @@
 # Sign-on delta descriptions and outgoing fragmentation
 
-Status: isolated fragment framing/state prototype; not used by the live server.
+Status: outgoing fragment state is integrated into the authenticated channel,
+but has no live sign-on producer and is not sent during normal operation.
 Delta descriptions can be prepared at startup from explicit local inputs, but
 are not sent to clients. Compression and complete sign-on remain open.
 
@@ -91,7 +92,7 @@ registered in-memory delta descriptions using a meta-delta bit format. A parser
 or copied text file alone is not evidence that the resulting binary wire format
 is correct. The file stays local under `fixtures/local/`.
 
-## Fragment prototype
+## Outgoing fragment channel
 
 `src/fragments.rs` splits an already-encoded normal-stream message into bounded
 256–1024 byte pieces (up to 65536 bytes total). Each un-munged piece has one
@@ -102,13 +103,19 @@ reliable-bit values and capacity checks. Its header format is based on
 [`Netchan_Transmit`](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/net_chan.cpp)
 and `MAKE_FRAGID` in `net.h`; test vectors are authored, not HLDS captures.
 
-The caller must validate packet sequence/ack bounds before passing an ack to the
-queue, set the netchannel reliable/fragment bits, and apply Munge2 to the entire
-fragment payload. The queue does not perform compression, network I/O, timers,
-or incoming fragment reassembly. It cannot by itself send `serverinfo`, and
-its tests do not prove interoperability with the official client. The current
-authenticated connection still deliberately disconnects on `new`; existing
-Steam authentication and cleanup behavior are unchanged.
+`netchannel::Sessions::queue_fragments` is available only on an already approved
+peer and rejects a busy channel. The channel applies the sequence/ACK bounds,
+reliable and fragment bits, Munge2, retransmission after a later negative ACK,
+periodic probes and a 15-second deadline. Revocation discards pending work. A
+test reconstructs the complete message from transmitted fragments while
+simulating packet and ACK loss; it is a synthetic receiver, not an HLDS or
+official-client interoperability test. The delayed ACK of an earlier copy after
+retransmission is accepted by the queue.
+
+No production caller queues fragments yet: in particular, receiving `new` still
+deliberately disconnects. The queue does not implement compression, incoming
+fragment reassembly, or file streams. This is not a working `serverinfo` or
+sign-on. Existing Steam authentication and cleanup behavior are unchanged.
 
 ## Required subsequent work
 
@@ -116,8 +123,7 @@ Steam authentication and cleanup behavior are unchanged.
 2. Replace the reference-derived offset catalog with verified owned structure
    layouts and implement game-specific callback behavior before using schemas
    for actual entity updates. The current prepared descriptions are not sent.
-3. Integrate fragmentation with the authenticated channel's sequence/ACK
-   lifecycle and optional compression; exercise packet loss, retries, and a
-   complete reassembly against a reference implementation.
+3. Validate fragment transmission and reassembly against the official client or
+   independent reference; implement any needed compression and incoming streams.
 4. Supply real map/client data, resource manifests, delta and movevars together;
    only then enable an opt-in serverinfo/sign-on test with the official client.

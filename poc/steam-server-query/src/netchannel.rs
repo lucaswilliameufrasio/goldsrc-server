@@ -1,4 +1,5 @@
 //! Bounded first-sign-on diagnostic. Not a world/game simulation.
+use crate::fragments::{Ack, FragmentQueue};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -74,10 +75,16 @@ fn command(payload: &[u8]) -> Result<Command, ()> {
 
 enum Phase {
     AwaitingNew,
+    Fragments {
+        started: Instant,
+        queue: FragmentQueue,
+        send_pending: bool,
+    },
     Closing {
         started: Instant,
         payload: Vec<u8>,
         last_reliable: Option<u32>,
+        reliable_bit: bool,
     },
 }
 
@@ -106,6 +113,7 @@ struct Channel {
     outgoing: u32,
     acknowledged: u32,
     reliable_ack: bool,
+    outgoing_reliable: bool,
     phase: Phase,
 }
 
@@ -122,19 +130,22 @@ impl Channel {
             outgoing: 1,
             acknowledged: 0,
             reliable_ack: false,
+            outgoing_reliable: false,
             phase: Phase::AwaitingNew,
         }
     }
 
     fn start_close(&mut self, now: Instant, reason: &[u8]) {
-        if matches!(self.phase, Phase::AwaitingNew) {
+        if !matches!(self.phase, Phase::Closing { .. }) {
             let mut payload = vec![2]; // svc_disconnect, followed by a NUL string.
             payload.extend_from_slice(reason);
             payload.push(0);
+            self.outgoing_reliable = !self.outgoing_reliable;
             self.phase = Phase::Closing {
                 started: now,
                 payload,
                 last_reliable: None,
+                reliable_bit: self.outgoing_reliable,
             };
         }
     }
@@ -144,14 +155,33 @@ impl Channel {
             return Update::status("netchan_sequence_exhausted", true);
         }
         let mut reliable = false;
+        let mut fragment = false;
         let mut payload = Vec::new();
+        if let Phase::Fragments {
+            queue,
+            send_pending,
+            ..
+        } = &mut self.phase
+            && *send_pending
+        {
+            match queue.transmit(self.outgoing) {
+                Ok(bytes) => payload = bytes,
+                Err(_) => return Update::status("netchan_fragment_error", true),
+            }
+            self.outgoing_reliable = queue.reliable_bit();
+            *send_pending = false;
+            reliable = true;
+            fragment = true;
+        }
         if let Phase::Closing {
             payload: pending,
             last_reliable,
+            reliable_bit,
             ..
         } = &mut self.phase
-            && last_reliable
-                .is_none_or(|sequence| self.acknowledged > sequence && !self.reliable_ack)
+            && last_reliable.is_none_or(|sequence| {
+                self.acknowledged > sequence && self.reliable_ack != *reliable_bit
+            })
         {
             reliable = true;
             payload.extend_from_slice(pending);
@@ -160,9 +190,10 @@ impl Channel {
         payload.resize(payload.len().max(8), 1); // svc_nop padding, 16-byte datagram minimum.
         let sequence = self.outgoing;
         self.outgoing += 1;
-        let mut packet = (sequence | if reliable { RELIABLE } else { 0 })
-            .to_le_bytes()
-            .to_vec();
+        let mut packet =
+            (sequence | if reliable { RELIABLE } else { 0 } | if fragment { FRAGMENT } else { 0 })
+                .to_le_bytes()
+                .to_vec();
         packet.extend_from_slice(
             &(self.incoming | if self.incoming_reliable { RELIABLE } else { 0 }).to_le_bytes(),
         );
@@ -208,12 +239,29 @@ impl Channel {
         }
         if let Phase::Closing {
             last_reliable: Some(sent),
+            reliable_bit,
             ..
         } = self.phase
-            && self.reliable_ack
+            && self.reliable_ack == reliable_bit
             && ack >= sent
         {
             return Update::status("netchan_disconnect_acked", true);
+        }
+        if let Phase::Fragments {
+            queue,
+            send_pending,
+            ..
+        } = &mut self.phase
+        {
+            match queue.acknowledge(ack, self.reliable_ack) {
+                Ack::Ignored => {}
+                Ack::Resend | Ack::Advanced => *send_pending = true,
+                Ack::Complete => {
+                    self.outgoing_reliable = queue.reliable_bit();
+                    self.start_close(now, SIGNON_UNAVAILABLE);
+                    return self.transmit(now, "netchan_fragments_complete");
+                }
+            }
         }
         let mut payload = packet[8..].to_vec();
         munge(&mut payload, sequence as u8, false);
@@ -243,6 +291,16 @@ impl Channel {
                 if now.saturating_duration_since(started) >= CLOSE_WAIT =>
             {
                 Some(Update::status("netchan_timeout", true))
+            }
+            Phase::Fragments { started, .. }
+                if now.saturating_duration_since(started) >= WAIT_NEW =>
+            {
+                Some(Update::status("netchan_fragment_timeout", true))
+            }
+            Phase::Fragments { .. }
+                if now.saturating_duration_since(self.last_send) >= PROBE_INTERVAL =>
+            {
+                Some(self.transmit(now, "netchan_fragment_probe"))
             }
             Phase::Closing { .. }
                 if now.saturating_duration_since(self.last_send) >= PROBE_INTERVAL =>
@@ -282,6 +340,31 @@ impl Sessions {
 
     pub fn contains(&self, peer: SocketAddr) -> bool {
         self.channels.contains_key(&peer)
+    }
+
+    /// Reserved for a future validated sign-on producer; no live caller exists yet.
+    #[allow(dead_code)]
+    pub fn queue_fragments(
+        &mut self,
+        peer: SocketAddr,
+        message: Vec<u8>,
+        now: Instant,
+    ) -> Result<Vec<u8>, &'static str> {
+        let channel = self.channels.get_mut(&peer).ok_or("netchan_unknown_peer")?;
+        if !matches!(channel.phase, Phase::AwaitingNew) {
+            return Err("netchan_busy");
+        }
+        let queue = FragmentQueue::new(message, 1024, channel.outgoing_reliable)
+            .map_err(|_| "netchan_invalid_fragments")?;
+        channel.phase = Phase::Fragments {
+            started: now,
+            queue,
+            send_pending: true,
+        };
+        channel
+            .transmit(now, "netchan_fragment_start")
+            .packet
+            .ok_or("netchan_fragment_error")
     }
 
     pub fn retry_acceptance(&mut self, peer: SocketAddr, now: Instant) -> Option<Vec<u8>> {
@@ -501,5 +584,123 @@ mod tests {
         assert!(sessions.revoke(peer(1), now).is_none());
         assert_eq!(sessions.tick(now + WAIT_NEW).len(), CAPACITY - 1);
         assert!(sessions.approve(peer(1000), now + WAIT_NEW).is_ok());
+    }
+
+    #[test]
+    fn fragments_use_channel_ack_loss_retry_and_reassemble() {
+        let now = Instant::now();
+        let source: Vec<u8> = (0..2300).map(|n| n as u8).collect();
+        let mut sessions = Sessions::new();
+        assert!(
+            sessions
+                .queue_fragments(peer(1), source.clone(), now)
+                .is_err()
+        );
+        sessions.approve(peer(1), now).unwrap();
+        let lost = sessions
+            .queue_fragments(peer(1), source.clone(), now)
+            .unwrap();
+        assert_eq!(
+            u32::from_le_bytes(lost[..4].try_into().unwrap()),
+            RELIABLE | FRAGMENT | 1
+        );
+        assert!(sessions.queue_fragments(peer(1), vec![1], now).is_err());
+        let probe = sessions
+            .tick(now + PROBE_INTERVAL)
+            .pop()
+            .unwrap()
+            .1
+            .packet
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(probe[..4].try_into().unwrap()), 2);
+        let resend = sessions
+            .receive(peer(1), &packet(1, 2, b"\x01"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        let mut pieces = Vec::new();
+        fn piece(packet: &[u8], index: u16, count: u16) -> Vec<u8> {
+            let raw = u32::from_le_bytes(packet[..4].try_into().unwrap());
+            assert_eq!(raw & (RELIABLE | FRAGMENT), RELIABLE | FRAGMENT);
+            let mut payload = packet[8..].to_vec();
+            munge(&mut payload, raw as u8, false);
+            assert_eq!(payload[0], 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[1..5].try_into().unwrap()),
+                (u32::from(index) << 16) | u32::from(count)
+            );
+            assert_eq!(&payload[5..7], &[0, 0]);
+            let size = usize::from(u16::from_le_bytes(payload[7..9].try_into().unwrap()));
+            assert_eq!(payload[9], 0);
+            payload[10..10 + size].to_vec()
+        }
+        pieces.extend(piece(&resend, 1, 3));
+        let second = sessions
+            .receive(peer(1), &packet(2, RELIABLE | 3, b"\x01"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        pieces.extend(piece(&second, 2, 3));
+        let probe = sessions
+            .tick(now + PROBE_INTERVAL)
+            .pop()
+            .unwrap()
+            .1
+            .packet
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(probe[..4].try_into().unwrap()), 5);
+        let second_retry = sessions
+            .receive(peer(1), &packet(3, RELIABLE | 5, b"\x01"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        assert_eq!(piece(&second_retry, 2, 3), source[1024..2048]);
+        let third = sessions
+            .receive(peer(1), &packet(4, 6, b"\x01"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        pieces.extend(piece(&third, 3, 3));
+        assert_eq!(pieces, source);
+        let complete = sessions
+            .receive(peer(1), &packet(5, RELIABLE | 7, b"\x01"), now)
+            .unwrap();
+        assert_eq!(complete.outcome, "netchan_fragments_complete");
+        assert!(sessions.contains(peer(1)));
+        let close = complete.packet.unwrap();
+        assert_eq!(
+            u32::from_le_bytes(close[..4].try_into().unwrap()),
+            RELIABLE | 8
+        );
+        assert!(
+            sessions
+                .receive(peer(1), &packet(6, 8, b"\x01"), now)
+                .unwrap()
+                .finished
+        );
+    }
+
+    #[test]
+    fn fragment_transfer_expires_and_revoke_discards_pending_data() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), now).unwrap();
+        sessions
+            .queue_fragments(peer(1), vec![1; 2000], now)
+            .unwrap();
+        let updates = sessions.tick(now + WAIT_NEW);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.outcome, "netchan_fragment_timeout");
+        assert!(!sessions.contains(peer(1)));
+        sessions.approve(peer(1), now).unwrap();
+        sessions
+            .queue_fragments(peer(1), vec![1; 2000], now)
+            .unwrap();
+        let packet = sessions.revoke(peer(1), now).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(packet[..4].try_into().unwrap()) & FRAGMENT,
+            0
+        );
+        assert!(!sessions.contains(peer(1)));
     }
 }

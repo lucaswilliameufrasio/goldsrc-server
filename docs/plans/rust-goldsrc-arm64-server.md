@@ -171,10 +171,11 @@ it to the public internet.
   For the reference map, slots 0, 1 and 31 match the actual HLDS function.
   The BSP diagnostic now assembles synthetic serverinfo from the measured map
   CRC and observed zero DLL field; no serverinfo is sent to clients yet.
-- **Prepared, not integrated:** bounded outgoing normal-stream fragment framing
-  and reliable acknowledgment state with synthetic tests; the actual client
-  protocol and HLDS delta-description bytes still require independent fixtures.
-  Compression, channel integration and resource negotiation are not implemented.
+- **Integrated, not enabled in live sign-on:** bounded outgoing normal-stream
+  fragments use the authenticated channel's ACK and retry state. Synthetic
+  tests cover loss and reassembly; client interoperability is not verified.
+  Local delta descriptions match HLDS bytes, while compression and resource
+  negotiation remain unimplemented.
   See [sign-on fragments](../compatibility/signon-fragments.md).
 
 The compatibility inventory has been started in

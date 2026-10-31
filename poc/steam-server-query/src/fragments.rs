@@ -19,6 +19,7 @@ pub struct FragmentQueue {
     count: u16,
     index: u16,
     reliable_bit: bool,
+    first_sent: Option<u32>,
     last_sent: Option<u32>,
 }
 
@@ -40,6 +41,7 @@ impl FragmentQueue {
             count,
             index: 1,
             reliable_bit: !previous_reliable,
+            first_sent: None,
             last_sent: None,
         })
     }
@@ -69,6 +71,9 @@ impl FragmentQueue {
         payload.extend_from_slice(&(length as u16).to_le_bytes());
         payload.push(0); // file stream absent
         payload.extend_from_slice(&self.message[start..end]);
+        if self.first_sent.is_none() {
+            self.first_sent = Some(sequence);
+        }
         self.last_sent = Some(sequence);
         Ok(payload)
     }
@@ -81,7 +86,10 @@ impl FragmentQueue {
         let Some(sent) = self.last_sent else {
             return Ack::Ignored;
         };
-        if sequence < sent {
+        let Some(first) = self.first_sent else {
+            return Ack::Ignored;
+        };
+        if sequence < first {
             return Ack::Ignored;
         }
         if reliable_bit != self.reliable_bit {
@@ -93,6 +101,7 @@ impl FragmentQueue {
         }
         self.index += 1;
         self.last_sent = None;
+        self.first_sent = None;
         if self.index > self.count {
             Ack::Complete
         } else {
@@ -146,5 +155,15 @@ mod tests {
         assert!(queue.transmit(1 << 30).is_err());
         queue.transmit(1).unwrap();
         assert!(queue.transmit(1).is_err());
+    }
+
+    #[test]
+    fn delayed_ack_for_original_send_is_valid_after_resend() {
+        let mut queue = FragmentQueue::new(vec![7; 300], 256, false).unwrap();
+        queue.transmit(1).unwrap();
+        assert_eq!(queue.acknowledge(2, false), Ack::Resend);
+        queue.transmit(3).unwrap();
+        assert_eq!(queue.acknowledge(1, true), Ack::Advanced);
+        assert!(!queue.reliable_bit());
     }
 }
