@@ -25,6 +25,12 @@ DLL field. This verifies the transform and field layout, not full sign-on.
 
 To inspect the end-to-end map CRC → slot transform → encoded serverinfo offline:
 
+The BSP header and CRC code is also available to the server process through
+`GOLDSRC_MAP_BSP`. When explicitly set, startup reads and validates that local
+file and prepares its CRC before opening the socket; errors abort startup. This
+does not load a playable world or send serverinfo. Without the option, startup
+behavior is unchanged. Maps remain operator-supplied and are not redistributed.
+
 ```sh
 cargo run --manifest-path poc/steam-server-query/Cargo.toml --example bsp_inventory -- \
   fixtures/local/reference-hlds/cstrike/maps/de_dust2.bsp --serverinfo-slot 0

@@ -1,77 +1,13 @@
 //! Read-only GoldSrc BSP v30 header inventory; no map bytes are redistributed.
 use std::env;
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 use std::path::Path;
+use steam_server_query_poc::map::inspect;
+#[cfg(test)]
+use steam_server_query_poc::map::{HEADER_SIZE, Lump, MAX_FILE_SIZE, map_crc, parse_header};
 
 #[path = "../src/serverinfo.rs"]
 mod serverinfo;
-
-const LUMPS: usize = 15;
-const HEADER_SIZE: usize = 4 + LUMPS * 8;
-const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
-
-#[derive(Debug, PartialEq)]
-struct Lump {
-    offset: u64,
-    length: u64,
-}
-
-fn parse_header(header: &[u8], file_size: u64) -> io::Result<Vec<Lump>> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid GoldSrc BSP v30 header");
-    if header.len() != HEADER_SIZE || !(HEADER_SIZE as u64..=MAX_FILE_SIZE).contains(&file_size) {
-        return Err(invalid());
-    }
-    if i32::from_le_bytes(header[..4].try_into().map_err(|_| invalid())?) != 30 {
-        return Err(invalid());
-    }
-    let mut lumps = Vec::with_capacity(LUMPS);
-    for entry in header[4..].as_chunks::<8>().0 {
-        let offset = i32::from_le_bytes(entry[..4].try_into().map_err(|_| invalid())?);
-        let length = i32::from_le_bytes(entry[4..].try_into().map_err(|_| invalid())?);
-        if offset < 0 || length < 0 {
-            return Err(invalid());
-        }
-        let offset = offset as u64;
-        let length = length as u64;
-        if offset.checked_add(length).is_none_or(|end| end > file_size)
-            || (length != 0 && offset < HEADER_SIZE as u64)
-        {
-            return Err(invalid());
-        }
-        lumps.push(Lump { offset, length });
-    }
-    Ok(lumps)
-}
-
-fn map_crc(reader: &mut (impl Read + Seek), file_size: u64) -> io::Result<(Vec<Lump>, u32)> {
-    let mut header = [0; HEADER_SIZE];
-    reader.seek(SeekFrom::Start(0))?;
-    reader.read_exact(&mut header)?;
-    let lumps = parse_header(&header, file_size)?;
-    let mut crc = crc32fast::Hasher::new();
-    let mut buffer = [0; 8192];
-    // Counter-Strike uses standard GoldSrc ordering: skip entity lump 0.
-    for lump in lumps.iter().skip(1) {
-        reader.seek(SeekFrom::Start(lump.offset))?;
-        let mut remaining = lump.length;
-        while remaining > 0 {
-            let amount = remaining.min(buffer.len() as u64) as usize;
-            reader.read_exact(&mut buffer[..amount])?;
-            crc.update(&buffer[..amount]);
-            remaining -= amount as u64;
-        }
-    }
-    // GoldSrc stores CRC32_Init/ProcessBuffer state directly as worldmapCRC;
-    // unlike a standard file CRC, it does not call CRC32_Final here.
-    Ok((lumps, !crc.finalize()))
-}
-
-fn inspect(path: &Path) -> io::Result<(Vec<Lump>, u32)> {
-    let mut file = File::open(path)?;
-    let size = file.metadata()?.len();
-    map_crc(&mut file, size)
-}
 
 fn main() -> io::Result<()> {
     let mut args = env::args_os();

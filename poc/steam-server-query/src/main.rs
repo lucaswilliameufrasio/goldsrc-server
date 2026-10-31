@@ -36,6 +36,16 @@ const PROTOCOL_VERSION: u8 = 48;
 const CHALLENGE: i32 = 0x4353_3136;
 
 fn main() -> std::io::Result<()> {
+    let _prepared_map = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
+        let (lumps, crc) = steam_server_query_poc::map::inspect(std::path::Path::new(&path))?;
+        eprintln!(
+            "Map metadata prepared: {} lumps, CRC 0x{crc:08x}; sign-on disabled",
+            lumps.len()
+        );
+        Some(crc)
+    } else {
+        None
+    };
     let delta_list = std::env::var_os("GOLDSRC_DELTA_LIST");
     let delta_catalog = std::env::var_os("GOLDSRC_DELTA_CATALOG");
     let _prepared_delta = match (delta_list, delta_catalog) {
