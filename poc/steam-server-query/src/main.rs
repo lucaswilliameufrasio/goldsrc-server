@@ -8,7 +8,8 @@ mod connection;
 mod fragments;
 #[cfg(feature = "steam-auth")]
 mod netchannel;
-#[cfg(test)]
+#[cfg(any(test, feature = "steam-auth"))]
+#[allow(dead_code)]
 mod resources;
 #[cfg(test)]
 mod serverinfo;

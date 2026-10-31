@@ -219,13 +219,19 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 
 ## Resource-message subset
 
-The test-only `ResourceNegotiation` prepares the outgoing manifest and derives
+`ResourceNegotiation` prepares the outgoing manifest and derives
 the expected checks from the same explicitly selected entries and spawn count.
 It validates a consistency response only while one is pending, rejects a
 malformed or inconsistent response terminally, and rejects replay. A successful
 response advances only to awaiting resources: downloads and actual availability
-are not implemented or presumed. No caller connects this state to Steam or the
-live netchannel; it does not implement the game DLL mismatch callback.
+are not implemented or presumed. The authenticated netchannel can queue a
+prepared manifest, wait for its fragment ACKs, and process `clc_fileconsistency`
+in the same packet as the final ACK. Invalid or mismatching responses initiate
+a reliable disconnect; even a valid response disconnects because resource
+availability and subsequent sign-on are not implemented. There is no production
+caller supplying a manifest or connecting this to `new`; the default live flow
+is unchanged. The game DLL mismatch callback is not implemented. The channel
+integration is exercised with synthetic packets, not an official client.
 
 `src/resources.rs` is compiled only in tests and encodes `svc_resourcerequest`
 and `svc_resourcelist` for explicit resources and optional consistency indices,

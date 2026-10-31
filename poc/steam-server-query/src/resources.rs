@@ -360,13 +360,13 @@ enum ResourcePhase {
     Rejected(ConsistencyError),
 }
 
-struct ManifestEntry<'a> {
-    resource: Resource<'a>,
+pub(crate) struct ManifestEntry<'a> {
+    pub(crate) resource: Resource<'a>,
     /// Present only for entries selected for consistency; never infer a digest.
-    consistency_hash: Option<[u8; 4]>,
+    pub(crate) consistency_hash: Option<[u8; 4]>,
 }
 
-struct ResourceNegotiation {
+pub(crate) struct ResourceNegotiation {
     spawn_count: u32,
     resource_count: usize,
     checks: Vec<ExpectedCheck>,
@@ -374,7 +374,14 @@ struct ResourceNegotiation {
 }
 
 impl ResourceNegotiation {
-    fn prepare(spawn_count: u32, entries: &[ManifestEntry<'_>]) -> io::Result<(Self, Vec<u8>)> {
+    pub(crate) fn expects_consistency(&self) -> bool {
+        self.phase == ResourcePhase::AwaitingConsistency
+    }
+
+    pub(crate) fn prepare(
+        spawn_count: u32,
+        entries: &[ManifestEntry<'_>],
+    ) -> io::Result<(Self, Vec<u8>)> {
         let mut resources = Vec::with_capacity(entries.len());
         let mut checks = Vec::new();
         let mut positions = Vec::new();
@@ -422,7 +429,7 @@ impl ResourceNegotiation {
         ))
     }
 
-    fn receive_consistency(&mut self, frame: &[u8]) -> Result<usize, ConsistencyError> {
+    pub(crate) fn receive_consistency(&mut self, frame: &[u8]) -> Result<usize, ConsistencyError> {
         if self.phase != ResourcePhase::AwaitingConsistency {
             return Err(ConsistencyError::Malformed);
         }

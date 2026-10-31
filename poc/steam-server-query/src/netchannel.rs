@@ -1,5 +1,6 @@
 //! Bounded first-sign-on diagnostic. Not a world/game simulation.
 use crate::fragments::{Ack, FragmentQueue};
+use crate::resources::{ManifestEntry, ResourceNegotiation};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -80,6 +81,9 @@ enum Phase {
         queue: FragmentQueue,
         send_pending: bool,
     },
+    AwaitingConsistency {
+        started: Instant,
+    },
     Closing {
         started: Instant,
         payload: Vec<u8>,
@@ -114,6 +118,7 @@ struct Channel {
     acknowledged: u32,
     reliable_ack: bool,
     outgoing_reliable: bool,
+    resources: Option<ResourceNegotiation>,
     phase: Phase,
 }
 
@@ -131,6 +136,7 @@ impl Channel {
             acknowledged: 0,
             reliable_ack: false,
             outgoing_reliable: false,
+            resources: None,
             phase: Phase::AwaitingNew,
         }
     }
@@ -258,13 +264,43 @@ impl Channel {
                 Ack::Resend | Ack::Advanced => *send_pending = true,
                 Ack::Complete => {
                     self.outgoing_reliable = queue.reliable_bit();
-                    self.start_close(now, SIGNON_UNAVAILABLE);
-                    return self.transmit(now, "netchan_fragments_complete");
+                    if self
+                        .resources
+                        .as_ref()
+                        .is_some_and(ResourceNegotiation::expects_consistency)
+                    {
+                        self.phase = Phase::AwaitingConsistency { started: now };
+                    } else {
+                        self.start_close(now, SIGNON_UNAVAILABLE);
+                        return self.transmit(now, "netchan_fragments_complete");
+                    }
                 }
             }
         }
         let mut payload = packet[8..].to_vec();
         munge(&mut payload, sequence as u8, false);
+        if matches!(self.phase, Phase::AwaitingConsistency { .. }) && payload.first() == Some(&7) {
+            let frame = &payload[1..];
+            let valid_tail = if frame.len() >= 2 {
+                let length = i16::from_le_bytes([frame[0], frame[1]]);
+                length > 0
+                    && (length as usize + 2) <= frame.len()
+                    && frame[length as usize + 2..].iter().all(|byte| *byte == 1)
+            } else {
+                false
+            };
+            let valid = valid_tail
+                && self
+                    .resources
+                    .as_mut()
+                    .is_some_and(|state| state.receive_consistency(frame).is_ok());
+            if valid {
+                self.start_close(now, SIGNON_UNAVAILABLE);
+                return self.transmit(now, "netchan_consistency_valid_resources_unavailable");
+            }
+            self.start_close(now, b"Invalid or inconsistent resource response.");
+            return self.transmit(now, "netchan_consistency_rejected");
+        }
         match command(&payload) {
             Ok(Command::Disconnect) => Update::status("netchan_client_disconnect", true),
             Ok(Command::New) => {
@@ -297,6 +333,11 @@ impl Channel {
             {
                 Some(Update::status("netchan_fragment_timeout", true))
             }
+            Phase::AwaitingConsistency { started }
+                if now.saturating_duration_since(started) >= WAIT_NEW =>
+            {
+                Some(Update::status("netchan_consistency_timeout", true))
+            }
             Phase::Fragments { .. }
                 if now.saturating_duration_since(self.last_send) >= PROBE_INTERVAL =>
             {
@@ -318,6 +359,34 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    /// Prepared for a future sign-on producer; requires an already approved peer.
+    #[allow(dead_code)]
+    pub fn queue_resource_manifest(
+        &mut self,
+        peer: SocketAddr,
+        spawn_count: u32,
+        entries: &[ManifestEntry<'_>],
+        now: Instant,
+    ) -> Result<Vec<u8>, &'static str> {
+        let (resources, message) = ResourceNegotiation::prepare(spawn_count, entries)
+            .map_err(|_| "netchan_invalid_manifest")?;
+        let channel = self.channels.get_mut(&peer).ok_or("netchan_unknown_peer")?;
+        if !matches!(channel.phase, Phase::AwaitingNew) {
+            return Err("netchan_busy");
+        }
+        let queue = FragmentQueue::new(message, 1024, channel.outgoing_reliable)
+            .map_err(|_| "netchan_invalid_manifest")?;
+        channel.resources = Some(resources);
+        channel.phase = Phase::Fragments {
+            started: now,
+            queue,
+            send_pending: true,
+        };
+        channel
+            .transmit(now, "netchan_resource_start")
+            .packet
+            .ok_or("netchan_fragment_error")
+    }
     pub fn new() -> Self {
         Self {
             channels: HashMap::new(),
@@ -412,6 +481,54 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_fragment_ack_and_consistency_response_share_packet() {
+        use crate::resources::Resource;
+        let now = Instant::now();
+        let entries = [ManifestEntry {
+            resource: Resource {
+                kind: 0,
+                filename: "test.wav",
+                index: 1,
+                download_size: 1,
+                flags: 0,
+                reserved: [0; 32],
+            },
+            consistency_hash: Some(0x12345678_u32.to_le_bytes()),
+        }];
+        for (frame, expected) in [
+            (
+                &[7, 6, 0, 0x8b, 0xd7, 0x50, 0, 0x46, 2][..],
+                "netchan_consistency_valid_resources_unavailable",
+            ),
+            (
+                &[7, 6, 0, 0x8b, 0xd7, 0x50, 0, 0x47, 2][..],
+                "netchan_consistency_rejected",
+            ),
+            (&[7, 0, 0][..], "netchan_consistency_rejected"),
+        ] {
+            let mut sessions = Sessions::new();
+            assert!(
+                sessions
+                    .queue_resource_manifest(peer(1), 1, &entries, now)
+                    .is_err()
+            );
+            sessions.approve(peer(1), now).unwrap();
+            let first = sessions
+                .queue_resource_manifest(peer(1), 1, &entries, now)
+                .unwrap();
+            assert_eq!(
+                u32::from_le_bytes(first[..4].try_into().unwrap()),
+                RELIABLE | FRAGMENT | 1
+            );
+            let response = sessions
+                .receive(peer(1), &packet(1, RELIABLE | 1, frame), now)
+                .unwrap();
+            assert_eq!(response.outcome, expected);
+            assert!(!response.finished);
+        }
+    }
 
     fn peer(port: u16) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], port))
