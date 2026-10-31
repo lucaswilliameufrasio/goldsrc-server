@@ -233,6 +233,20 @@ caller supplying a manifest or connecting this to `new`; the default live flow
 is unchanged. The game DLL mismatch callback is not implemented. The channel
 integration is exercised with synthetic packets, not an official client.
 
+The opt-in `reference_manifest_fragments_reassemble_and_wait_for_consistency`
+test joins the ignored local HLDS manifest and metadata captures by resource
+position, checks that their reserved fields agree, and queues all 781 entries
+and 62 checks through the channel. A synthetic approved peer acknowledges 19
+fragments; their reconstructed 19314 bytes match the independent HLDS output.
+Without a consistency response the channel expires. This is offline reference
+evidence, not Steam approval, real resource availability, or a live producer.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  reference_manifest_fragments_reassemble_and_wait_for_consistency -- --ignored
+```
+
 `src/resources.rs` is compiled only in tests and encodes `svc_resourcerequest`
 and `svc_resourcelist` for explicit resources and optional consistency indices,
 without a download URL or custom hashes. Nonzero 32-byte reserved fields are

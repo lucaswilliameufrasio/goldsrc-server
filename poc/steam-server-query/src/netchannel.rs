@@ -483,6 +483,105 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires local HLDS manifest and consistency captures"]
+    fn reference_manifest_fragments_reassemble_and_wait_for_consistency() {
+        use crate::resources::Resource;
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let root = std::path::Path::new(&root);
+        let manifest = std::fs::read_to_string(root.join("hlds-manifest-10211-v2.tsv")).unwrap();
+        let metadata =
+            std::fs::read_to_string(root.join("hlds-consistency-metadata-10211.tsv")).unwrap();
+        let reference = std::fs::read(root.join("hlds-manifest-consistency-10211.bin")).unwrap();
+        fn hex<const N: usize>(value: &str) -> [u8; N] {
+            assert_eq!(value.len(), 2 * N);
+            let mut result = [0; N];
+            for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+                result[index] = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+            }
+            result
+        }
+        let mut checks = std::collections::HashMap::new();
+        for line in metadata.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4);
+            let position: usize = fields[0].parse().unwrap();
+            assert!(
+                checks
+                    .insert(position, (hex::<4>(fields[1]), hex::<32>(fields[2])))
+                    .is_none()
+            );
+        }
+        assert_eq!(checks.len(), 62);
+        let mut entries = Vec::new();
+        for (position, line) in manifest.lines().enumerate() {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 6);
+            let flags: u8 = fields[4].parse().unwrap();
+            assert_eq!(flags & !0x83, 0);
+            let reserved = hex::<32>(fields[5]);
+            let check = checks.remove(&position);
+            assert_eq!(check.is_some(), flags & 0x80 != 0);
+            let consistency_hash = check.map(|(hash, metadata_reserved)| {
+                assert_eq!(metadata_reserved, reserved);
+                hash
+            });
+            entries.push(ManifestEntry {
+                resource: Resource {
+                    kind: fields[1].parse().unwrap(),
+                    filename: fields[0],
+                    index: fields[2].parse().unwrap(),
+                    download_size: fields[3].parse().unwrap(),
+                    flags: flags & 3,
+                    reserved,
+                },
+                consistency_hash,
+            });
+        }
+        assert_eq!(entries.len(), 781);
+        assert!(checks.is_empty());
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), now).unwrap();
+        let mut outgoing = sessions
+            .queue_resource_manifest(peer(1), 1, &entries, now)
+            .unwrap();
+        let mut reconstructed = Vec::new();
+        let mut index = 1_u32;
+        let mut reliable = false;
+        loop {
+            let raw = u32::from_le_bytes(outgoing[..4].try_into().unwrap());
+            assert_eq!(raw & (RELIABLE | FRAGMENT), RELIABLE | FRAGMENT);
+            let mut body = outgoing[8..].to_vec();
+            munge(&mut body, raw as u8, false);
+            assert_eq!(body[0], 1);
+            let id = u32::from_le_bytes(body[1..5].try_into().unwrap());
+            assert_eq!(id >> 16, index);
+            assert_eq!(&body[5..7], &[0, 0]);
+            assert_eq!(body[9], 0);
+            let size = usize::from(u16::from_le_bytes(body[7..9].try_into().unwrap()));
+            reconstructed.extend_from_slice(&body[10..10 + size]);
+            reliable = !reliable;
+            let ack = (raw & SEQUENCE_MASK) | if reliable { RELIABLE } else { 0 };
+            let update = sessions
+                .receive(peer(1), &packet(index, ack, &[1]), now)
+                .unwrap();
+            if index == id & 0xffff {
+                assert_eq!(update.outcome, "netchan_ack");
+                break;
+            }
+            outgoing = update.packet.unwrap();
+            index += 1;
+        }
+        assert_eq!(index, 19);
+        assert_eq!(reconstructed, reference);
+        let updates = sessions.tick(now + WAIT_NEW);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.outcome, "netchan_consistency_timeout");
+        assert!(!sessions.contains(peer(1)));
+    }
+
+    #[test]
     fn resource_fragment_ack_and_consistency_response_share_packet() {
         use crate::resources::Resource;
         let now = Instant::now();
