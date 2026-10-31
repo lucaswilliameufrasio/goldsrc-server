@@ -220,9 +220,9 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 ## Resource-message subset
 
 `src/resources.rs` is compiled only in tests and encodes `svc_resourcerequest`
-and `svc_resourcelist` for explicit resources without a download URL, custom
-hashes or consistency entries. Nonzero 32-byte reserved fields are serialized;
-unsupported flags are rejected;
+and `svc_resourcelist` for explicit resources and optional consistency indices,
+without a download URL or custom hashes. Nonzero 32-byte reserved fields are
+serialized; unsupported flags and unrepresentable indices are rejected;
 the encoder does not scan a map or filesystem, transfer resources, process a
 client response, or provide live negotiation. In an isolated HLDS 10211 process
 `examples/hlds_resources.gdb` supplied two synthetic entries and called
@@ -239,6 +239,16 @@ match that deliberately modified HLDS run. This does not validate the normal
 62-entry consistency list or a real resource negotiation. Both reference files
 remain ignored in `fixtures/local/`; do not redistribute without rights.
 
+In a separate isolated HLDS 10211 run, `examples/hlds_consistency.gdb` retained
+the 62 consistency entries, verified `mp_consistency=1` and a non-proxy local
+slot, and confirmed that HLDS marked a consistency response as required. The
+full list and resource message was 19314 bytes. With the independently captured
+781-entry metadata and 62 marked positions, Rust matched every byte. The format
+uses 5-bit relative positions for gaps up to 31 and 10-bit absolute positions
+for larger gaps; unrepresentable absolute positions are rejected rather than
+truncated. This validates the outgoing serialization in one configuration,
+not a client's response or actual enforcement of file checks.
+
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \
@@ -246,6 +256,9 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \
   local_manifest_matches_hlds_without_consistency -- --ignored
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  local_manifest_matches_hlds_with_consistency -- --ignored
 ```
 
 ## Required subsequent work

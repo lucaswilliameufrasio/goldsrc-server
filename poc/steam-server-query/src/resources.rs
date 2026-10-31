@@ -39,6 +39,15 @@ impl Bits {
 
 /// Encode an uncompressed list with no URL, custom data or consistency checks.
 pub fn encode(spawn_count: u32, resources: &[Resource<'_>]) -> io::Result<Vec<u8>> {
+    encode_with_consistency(spawn_count, resources, None)
+}
+
+/// When present, consistency indices are positions in the manifest, not resource IDs.
+pub fn encode_with_consistency(
+    spawn_count: u32,
+    resources: &[Resource<'_>],
+    checks: Option<&[usize]>,
+) -> io::Result<Vec<u8>> {
     if resources.len() > 4095 {
         return Err(Error::new(ErrorKind::InvalidInput, "too many resources"));
     }
@@ -73,7 +82,37 @@ pub fn encode(spawn_count: u32, resources: &[Resource<'_>]) -> io::Result<Vec<u8
             }
         }
     }
-    bits.write(0, 1)?; // no consistency list
+    if let Some(checks) = checks {
+        bits.write(1, 1)?;
+        let mut last = 0_usize;
+        for (position, index) in checks.iter().copied().enumerate() {
+            if index >= resources.len() || (position > 0 && index <= last) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "invalid consistency index",
+                ));
+            }
+            let difference = index - last;
+            bits.write(1, 1)?;
+            if difference <= 31 {
+                bits.write(1, 1)?;
+                bits.write(difference as u32, 5)?;
+            } else {
+                if index > 1023 {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "consistency index cannot be represented",
+                    ));
+                }
+                bits.write(0, 1)?;
+                bits.write(index as u32, 10)?;
+            }
+            last = index;
+        }
+        bits.write(0, 1)?;
+    } else {
+        bits.write(0, 1)?;
+    }
     if bits.data.len() + 10 > MAX_MESSAGE {
         return Err(Error::new(
             ErrorKind::InvalidInput,
@@ -245,5 +284,67 @@ mod tests {
         assert_eq!(resources.len(), 781);
         assert_eq!(reserved_count, 52);
         assert_eq!(encode(1, &resources).unwrap(), expected);
+    }
+
+    #[test]
+    fn consistency_checks_reject_duplicates_out_of_range_and_unencodable_gaps() {
+        let make = || Resource {
+            kind: 0,
+            filename: "x",
+            index: 1,
+            download_size: 1,
+            flags: 0,
+            reserved: [0; 32],
+        };
+        let resources: Vec<_> = (0..1100).map(|_| make()).collect();
+        assert!(encode_with_consistency(1, &resources, Some(&[0, 31, 63, 1023])).is_ok());
+        assert!(encode_with_consistency(1, &resources, Some(&[0, 0])).is_err());
+        assert!(encode_with_consistency(1, &resources, Some(&[2, 1])).is_err());
+        assert!(encode_with_consistency(1, &resources, Some(&[1100])).is_err());
+        assert!(encode_with_consistency(1, &resources, Some(&[1024])).is_err());
+        assert!(encode_with_consistency(1, &resources, Some(&[1023, 1054])).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS manifest and consistency capture"]
+    fn local_manifest_matches_hlds_with_consistency() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let root = std::path::Path::new(&root);
+        let input = std::fs::read_to_string(root.join("hlds-manifest-10211-v2.tsv")).unwrap();
+        let expected = std::fs::read(root.join("hlds-manifest-consistency-10211.bin")).unwrap();
+        let mut resources = Vec::new();
+        let mut checks = Vec::new();
+        for line in input.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 6);
+            let flags: u8 = fields[4].parse().unwrap();
+            assert_eq!(flags & !0x83, 0);
+            if flags & 0x80 != 0 {
+                checks.push(resources.len());
+            }
+            let raw = fields[5].as_bytes();
+            assert_eq!(raw.len(), 64);
+            let mut reserved = [0_u8; 32];
+            for (index, pair) in raw.as_chunks::<2>().0.iter().enumerate() {
+                reserved[index] =
+                    u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+            }
+            resources.push(Resource {
+                filename: fields[0],
+                kind: fields[1].parse().unwrap(),
+                index: fields[2].parse().unwrap(),
+                download_size: fields[3].parse().unwrap(),
+                flags: flags & 3,
+                reserved,
+            });
+        }
+        assert_eq!(resources.len(), 781);
+        assert_eq!(checks.len(), 62);
+        assert_eq!(expected.len(), 19314);
+        assert_eq!(
+            encode_with_consistency(1, &resources, Some(&checks)).unwrap(),
+            expected
+        );
     }
 }
