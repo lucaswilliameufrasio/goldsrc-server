@@ -260,10 +260,12 @@ intentionally stricter than simply counting entries in the reference code.
 The test-only `validate_consistency_response` additionally handles exact bounds,
 specified bounds, and specified bounds if available (all six values `-1`).
 It rejects nonfinite values, inverted bounds and invalid expected bounds as a
-deliberately stricter safety policy. Expected bounds must be provided explicitly;
-this parser does not yet decode the HLDS-munged reserved metadata itself.
-The game-DLL `InconsistentFile` callback policy is not implemented. A hash match
-is not Steam authentication or a security guarantee.
+deliberately stricter safety policy. `check_from_metadata` derives each expected
+hash or model-bounds mode from an explicitly selected resource's hash and
+spawn-specific munged reserved bytes. The caller must select the correct
+`RES_CHECKFILE` entries and provide the correct server-side digest and spawn
+count. The game-DLL `InconsistentFile` callback policy is not implemented. A
+hash match is not Steam authentication or a security guarantee.
 
 In isolated HLDS 10211, `examples/hlds_consistency_response.gdb` used the
 engine's own bit writer and `COM_Munge` to create a synthetic one-file hash
@@ -278,15 +280,27 @@ official HLDS using its bit writer, `COM_Munge` and `SV_ParseConsistencyResponse
 it covered the three bounds modes and was accepted by Rust byte for byte. The
 ignored fixture remains at `fixtures/local/hlds-consistency-bounds-synthetic.bin`.
 `examples/hlds_inconsistent_bounds.gdb` separately observed that an exact
-bounds mismatch reached the actual CS game DLL `InconsistentFile` callback;
-the debugger stopped at callback entry, so its return policy was not observed.
+bounds mismatch reached the actual CS game DLL `InconsistentFile` callback,
+which returned 1; HLDS then reached `SV_DropClient`. The debugger stopped at
+drop entry without executing a real disconnection. This is evidence for the
+synthetic mismatch and observed CS build, not all game DLLs or policy cases.
 Rust deliberately returns `BoundsMismatch` instead of assuming callback approval.
 Neither test uses a network client or provides evidence of playable sign-on.
+
+`examples/hlds_consistency_metadata.gdb` independently calls the official
+HLDS `COM_UnMunge` on each selected entry of the local map manifest. Rust's
+`check_from_metadata` matched all 62 results, including 52 model bounds and 10
+hash checks. The metadata is local and ignored at
+`fixtures/local/hlds-consistency-metadata-10211.tsv`; this comparison does not
+verify a real client response or implement the resource exchange.
 
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \
   model_bounds_response_matches_hlds -- --ignored
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  real_consistency_metadata_matches_hlds_decoding -- --ignored
 ```
 
 ```sh

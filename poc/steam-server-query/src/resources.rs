@@ -133,7 +133,7 @@ pub struct ExpectedHash {
     pub hash: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExpectedValue {
     Hash(u32),
     SameBounds { mins: [f32; 3], maxs: [f32; 3] },
@@ -141,6 +141,7 @@ pub enum ExpectedValue {
     WithinBoundsIfAvailable { mins: [f32; 3], maxs: [f32; 3] },
 }
 
+#[derive(Debug, PartialEq)]
 pub struct ExpectedCheck {
     pub resource_position: u16,
     pub value: ExpectedValue,
@@ -169,6 +170,50 @@ fn unmunge_response(data: &mut [u8], spawn_count: u32) {
         value = u32::from_le_bytes(transformed).swap_bytes() ^ !spawn_count;
         *bytes = value.to_le_bytes();
     }
+}
+
+/// Decode a previously selected RES_CHECKFILE entry using the originating spawn count.
+/// The caller must supply the first four bytes of the actual server-side file digest.
+pub fn check_from_metadata(
+    resource_position: u16,
+    hash: [u8; 4],
+    reserved: [u8; 32],
+    spawn_count: u32,
+) -> Result<ExpectedCheck, ConsistencyError> {
+    if resource_position >= 4096 {
+        return Err(ConsistencyError::InvalidManifest);
+    }
+    let value = if reserved.iter().all(|byte| *byte == 0) {
+        ExpectedValue::Hash(u32::from_le_bytes(hash))
+    } else {
+        let mut decoded = reserved;
+        unmunge_response(&mut decoded, spawn_count);
+        let mut coords = [0_f32; 6];
+        for (index, item) in coords.iter_mut().enumerate() {
+            let start = 1 + index * 4;
+            let bytes: [u8; 4] = decoded[start..start + 4]
+                .try_into()
+                .map_err(|_| ConsistencyError::InvalidManifest)?;
+            *item = f32::from_le_bytes(bytes);
+        }
+        let mins = [coords[0], coords[1], coords[2]];
+        let maxs = [coords[3], coords[4], coords[5]];
+        for axis in 0..3 {
+            if !mins[axis].is_finite() || !maxs[axis].is_finite() || mins[axis] > maxs[axis] {
+                return Err(ConsistencyError::InvalidManifest);
+            }
+        }
+        match decoded[0] {
+            1 => ExpectedValue::SameBounds { mins, maxs },
+            2 => ExpectedValue::WithinBounds { mins, maxs },
+            3 => ExpectedValue::WithinBoundsIfAvailable { mins, maxs },
+            _ => return Err(ConsistencyError::InvalidManifest),
+        }
+    };
+    Ok(ExpectedCheck {
+        resource_position,
+        value,
+    })
 }
 
 struct Reader<'a> {
@@ -310,6 +355,113 @@ pub fn validate_consistency_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_metadata_and_invalid_positions_are_checked() {
+        assert_eq!(
+            check_from_metadata(2, [0x78, 0x56, 0x34, 0x12], [0; 32], 1),
+            Ok(ExpectedCheck {
+                resource_position: 2,
+                value: ExpectedValue::Hash(0x12345678)
+            })
+        );
+        assert_eq!(
+            check_from_metadata(4096, [0; 4], [0; 32], 1),
+            Err(ConsistencyError::InvalidManifest)
+        );
+        assert_eq!(
+            check_from_metadata(1, [0; 4], [0xff; 32], 1),
+            Err(ConsistencyError::InvalidManifest)
+        );
+    }
+
+    #[test]
+    fn bounds_metadata_rejects_unknown_mode_and_invalid_coordinates() {
+        let mut raw = [0_u8; 32];
+        raw[0] = 2;
+        for (index, value) in [-1_f32, -2.0, -3.0, 1.0, 2.0, 3.0].iter().enumerate() {
+            raw[1 + index * 4..5 + index * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut encrypted: [u8; 32] = synthetic_frame(raw.to_vec())[2..].try_into().unwrap();
+        assert_eq!(
+            check_from_metadata(5, [0; 4], encrypted, 1),
+            Ok(ExpectedCheck {
+                resource_position: 5,
+                value: ExpectedValue::WithinBounds {
+                    mins: [-1.0, -2.0, -3.0],
+                    maxs: [1.0, 2.0, 3.0]
+                },
+            })
+        );
+        raw[0] = 9;
+        encrypted.copy_from_slice(&synthetic_frame(raw.to_vec())[2..]);
+        assert_eq!(
+            check_from_metadata(5, [0; 4], encrypted, 1),
+            Err(ConsistencyError::InvalidManifest)
+        );
+        raw[0] = 2;
+        raw[1..5].copy_from_slice(&f32::NAN.to_le_bytes());
+        encrypted.copy_from_slice(&synthetic_frame(raw.to_vec())[2..]);
+        assert_eq!(
+            check_from_metadata(5, [0; 4], encrypted, 1),
+            Err(ConsistencyError::InvalidManifest)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS consistency metadata capture"]
+    fn real_consistency_metadata_matches_hlds_decoding() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let path = std::path::Path::new(&root).join("hlds-consistency-metadata-10211.tsv");
+        let input = std::fs::read_to_string(path).unwrap();
+        fn hex<const N: usize>(s: &str) -> [u8; N] {
+            assert_eq!(s.len(), N * 2);
+            let mut result = [0; N];
+            for (i, pair) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+                result[i] = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+            }
+            result
+        }
+        let mut count = 0;
+        let mut bounds_count = 0;
+        for line in input.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4);
+            let position: u16 = fields[0].parse().unwrap();
+            let hash = hex::<4>(fields[1]);
+            let raw = hex::<32>(fields[2]);
+            let decoded = hex::<32>(fields[3]);
+            let actual = check_from_metadata(position, hash, raw, 1).unwrap();
+            let expected = if raw == [0; 32] {
+                ExpectedValue::Hash(u32::from_le_bytes(hash))
+            } else {
+                bounds_count += 1;
+                let mut values = [0_f32; 6];
+                for (index, value) in values.iter_mut().enumerate() {
+                    let start = 1 + index * 4;
+                    *value = f32::from_le_bytes(decoded[start..start + 4].try_into().unwrap());
+                }
+                let mins = [values[0], values[1], values[2]];
+                let maxs = [values[3], values[4], values[5]];
+                match decoded[0] {
+                    1 => ExpectedValue::SameBounds { mins, maxs },
+                    2 => ExpectedValue::WithinBounds { mins, maxs },
+                    3 => ExpectedValue::WithinBoundsIfAvailable { mins, maxs },
+                    _ => panic!("HLDS returned an unsupported check type"),
+                }
+            };
+            assert_eq!(
+                actual,
+                ExpectedCheck {
+                    resource_position: position,
+                    value: expected
+                }
+            );
+            count += 1;
+        }
+        assert_eq!((count, bounds_count), (62, 52));
+    }
 
     fn synthetic_hash_frame(entries: &[(u16, u32)]) -> Vec<u8> {
         let mut bits = Bits {

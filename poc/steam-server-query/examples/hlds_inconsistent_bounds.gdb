@@ -4,6 +4,9 @@ set disable-randomization off
 break SV_ActivateServer
 run -game cstrike -console +maxplayers 2 +sv_lan 1 +map de_dust2
 set host_client = &svs.clients[0]
+set host_client->netchan.message.data = &host_client->netchan.message_buf[0]
+set host_client->netchan.message.maxsize = sizeof(host_client->netchan.message_buf)
+set host_client->netchan.message.cursize = 0
 set sv.num_resources = 1
 set sv.num_consistency = 1
 set sv.resourcelist[0].ucFlags = 128
@@ -45,5 +48,18 @@ except gdb.error:
 if int(gdb.parse_and_eval('$pc')) != callback:
     raise RuntimeError('game DLL inconsistent-file callback was not reached')
 print('HLDS reached game DLL inconsistent-file callback for synthetic bounds mismatch')
+end
+finish
+python
+if int(gdb.parse_and_eval('$eax')) != 1:
+    raise RuntimeError('unexpected game DLL callback result')
+print('CS InconsistentFile returned 1 for synthetic mismatch')
+end
+break SV_DropClient
+continue
+python
+if gdb.newest_frame().name() != 'SV_DropClient':
+    raise RuntimeError('expected HLDS drop was not reached')
+print('HLDS reached SV_DropClient after game DLL callback')
 end
 quit
