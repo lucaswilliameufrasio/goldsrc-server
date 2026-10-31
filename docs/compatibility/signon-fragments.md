@@ -249,6 +249,26 @@ for larger gaps; unrepresentable absolute positions are rejected rather than
 truncated. This validates the outgoing serialization in one configuration,
 not a client's response or actual enforcement of file checks.
 
+### Consistency response: hash subset
+
+The test-only `validate_hash_response` reads the signed 16-bit payload length,
+reverses `COM_Munge` with the spawn count, and parses 1-bit entry markers,
+12-bit resource positions and 32-bit hashes. It requires exactly one response
+for every explicitly supplied expected hash and rejects unknown, duplicate,
+missing, truncated or mismatched entries. These duplicate/omission checks are
+intentionally stricter than simply counting entries in the reference code.
+Only hash-based checks are supported; model bounds and game-DLL
+`InconsistentFile` callback policy are not implemented. A hash match is not
+Steam authentication or a security guarantee.
+
+In isolated HLDS 10211, `examples/hlds_consistency_response.gdb` used the
+engine's own bit writer and `COM_Munge` to create a synthetic one-file hash
+response and called `SV_ParseConsistencyResponse` with a local test slot.
+The HLDS accepted it (`msg_badread=0` and `has_force_unmodified=0`). Rust
+accepts those same eight bytes and rejects a wrong hash, invalid lengths and
+other malformed synthetic responses. No real client, ticket or game connection
+was used. The parser is not connected to live traffic.
+
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \

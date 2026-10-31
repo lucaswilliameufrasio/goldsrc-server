@@ -127,9 +127,247 @@ pub fn encode_with_consistency(
     Ok(out)
 }
 
+/// A hash-based check only. Model-bound checks require separate handling.
+pub struct ExpectedHash {
+    pub resource_position: u16,
+    pub hash: u32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConsistencyError {
+    InvalidLength,
+    InvalidManifest,
+    Malformed,
+    HashMismatch,
+}
+
+fn unmunge_response(data: &mut [u8], spawn_count: u32) {
+    const TABLE: [u8; 16] = [
+        0x7a, 0x64, 0x05, 0xf1, 0x1b, 0x9b, 0xa0, 0xb5, 0xca, 0xed, 0x61, 0x0d, 0x4a, 0xdf, 0x8e,
+        0xc7,
+    ];
+    for (word, bytes) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let mut value = u32::from_le_bytes(*bytes) ^ spawn_count;
+        let mut transformed = value.to_le_bytes();
+        for (index, byte) in transformed.iter_mut().enumerate() {
+            *byte ^= 0xa5 | ((index as u8) << index) | index as u8 | TABLE[(word + index) & 15];
+        }
+        value = u32::from_le_bytes(transformed).swap_bytes() ^ !spawn_count;
+        *bytes = value.to_le_bytes();
+    }
+}
+
+struct Reader<'a> {
+    data: &'a [u8],
+    bit: usize,
+}
+
+impl Reader<'_> {
+    fn read(&mut self, count: usize) -> Result<u32, ConsistencyError> {
+        if self.bit + count > self.data.len() * 8 {
+            return Err(ConsistencyError::Malformed);
+        }
+        let mut value = 0_u32;
+        for index in 0..count {
+            value |= u32::from((self.data[self.bit / 8] >> (self.bit % 8)) & 1) << index;
+            self.bit += 1;
+        }
+        Ok(value)
+    }
+}
+
+/// Parse bytes after clc_fileconsistency, returning consumed bytes on a full hash match.
+/// Stricter than HLDS: rejects duplicates, omissions and extra bytes within the frame.
+/// It does not authenticate a player or support model bounds / game-DLL callbacks.
+pub fn validate_hash_response(
+    frame: &[u8],
+    spawn_count: u32,
+    resource_count: usize,
+    expected: &[ExpectedHash],
+) -> Result<usize, ConsistencyError> {
+    if frame.len() < 2 {
+        return Err(ConsistencyError::InvalidLength);
+    }
+    let length = i16::from_le_bytes([frame[0], frame[1]]);
+    if length <= 0 || usize::from(length as u16) > frame.len() - 2 {
+        return Err(ConsistencyError::InvalidLength);
+    }
+    if resource_count > 4096 || expected.is_empty() || expected.len() > resource_count {
+        return Err(ConsistencyError::InvalidManifest);
+    }
+    let mut checks = vec![None; resource_count];
+    for item in expected {
+        let index = usize::from(item.resource_position);
+        if index >= resource_count || checks[index].is_some() {
+            return Err(ConsistencyError::InvalidManifest);
+        }
+        checks[index] = Some(item.hash);
+    }
+    let consumed = usize::from(length as u16) + 2;
+    let mut decoded = frame[2..consumed].to_vec();
+    unmunge_response(&mut decoded, spawn_count);
+    let mut reader = Reader {
+        data: &decoded,
+        bit: 0,
+    };
+    let mut count = 0_usize;
+    while reader.read(1)? != 0 {
+        let index = reader.read(12)? as usize;
+        let expected_hash = checks
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or(ConsistencyError::Malformed)?;
+        let actual_hash = reader.read(32)?;
+        if actual_hash != expected_hash {
+            return Err(ConsistencyError::HashMismatch);
+        }
+        count += 1;
+    }
+    if count != expected.len() || reader.bit.div_ceil(8) != decoded.len() {
+        return Err(ConsistencyError::Malformed);
+    }
+    Ok(consumed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synthetic_hash_frame(entries: &[(u16, u32)]) -> Vec<u8> {
+        let mut bits = Bits {
+            data: Vec::new(),
+            bit: 0,
+        };
+        for &(index, hash) in entries {
+            bits.write(1, 1).unwrap();
+            bits.write(u32::from(index), 12).unwrap();
+            bits.write(hash, 32).unwrap();
+        }
+        bits.write(0, 1).unwrap();
+        const TABLE: [u8; 16] = [
+            0x7a, 0x64, 0x05, 0xf1, 0x1b, 0x9b, 0xa0, 0xb5, 0xca, 0xed, 0x61, 0x0d, 0x4a, 0xdf,
+            0x8e, 0xc7,
+        ];
+        for (word, bytes) in bits.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let value = (u32::from_le_bytes(*bytes) ^ !1_u32).swap_bytes();
+            let mut transformed = value.to_le_bytes();
+            for (index, byte) in transformed.iter_mut().enumerate() {
+                *byte ^= 0xa5 | ((index as u8) << index) | index as u8 | TABLE[(word + index) & 15];
+            }
+            *bytes = (u32::from_le_bytes(transformed) ^ 1).to_le_bytes();
+        }
+        let mut frame = (bits.data.len() as u16).to_le_bytes().to_vec();
+        frame.extend_from_slice(&bits.data);
+        frame
+    }
+
+    #[test]
+    fn hash_response_rejects_missing_duplicate_and_unrequested_entries() {
+        let expected = [
+            ExpectedHash {
+                resource_position: 0,
+                hash: 7,
+            },
+            ExpectedHash {
+                resource_position: 1,
+                hash: 8,
+            },
+        ];
+        assert_eq!(
+            validate_hash_response(&synthetic_hash_frame(&[(0, 7), (1, 8)]), 1, 3, &expected),
+            Ok(14)
+        );
+        assert_eq!(
+            validate_hash_response(&synthetic_hash_frame(&[(0, 7)]), 1, 3, &expected),
+            Err(ConsistencyError::Malformed)
+        );
+        assert_eq!(
+            validate_hash_response(&synthetic_hash_frame(&[(0, 7), (0, 7)]), 1, 3, &expected),
+            Err(ConsistencyError::Malformed)
+        );
+        assert_eq!(
+            validate_hash_response(&synthetic_hash_frame(&[(0, 7), (2, 8)]), 1, 3, &expected),
+            Err(ConsistencyError::Malformed)
+        );
+        assert_eq!(
+            validate_hash_response(&synthetic_hash_frame(&[(0, 7), (3, 8)]), 1, 3, &expected),
+            Err(ConsistencyError::Malformed)
+        );
+    }
+
+    #[test]
+    fn validates_hlds_generated_hash_response_and_rejects_invalid_data() {
+        // Synthetic capture generated and accepted by official HLDS 10211.
+        let frame = [0x06, 0x00, 0x8b, 0xd7, 0x50, 0x00, 0x46, 0x02];
+        let expected = [ExpectedHash {
+            resource_position: 0,
+            hash: 0x12345678,
+        }];
+        assert_eq!(validate_hash_response(&frame, 1, 1, &expected), Ok(8));
+        let mut trailing = frame.to_vec();
+        trailing.push(42);
+        assert_eq!(validate_hash_response(&trailing, 1, 1, &expected), Ok(8));
+        assert_eq!(
+            validate_hash_response(&frame[..7], 1, 1, &expected),
+            Err(ConsistencyError::InvalidLength)
+        );
+        assert_eq!(
+            validate_hash_response(&[0, 0], 1, 1, &expected),
+            Err(ConsistencyError::InvalidLength)
+        );
+        assert_eq!(
+            validate_hash_response(&[0xff, 0xff], 1, 1, &expected),
+            Err(ConsistencyError::InvalidLength)
+        );
+        assert_eq!(
+            validate_hash_response(
+                &frame,
+                1,
+                1,
+                &[ExpectedHash {
+                    resource_position: 0,
+                    hash: 0
+                }]
+            ),
+            Err(ConsistencyError::HashMismatch)
+        );
+        assert_eq!(
+            validate_hash_response(
+                &frame,
+                1,
+                1,
+                &[ExpectedHash {
+                    resource_position: 1,
+                    hash: 0
+                }]
+            ),
+            Err(ConsistencyError::InvalidManifest)
+        );
+        assert_eq!(
+            validate_hash_response(
+                &frame,
+                1,
+                2,
+                &[
+                    ExpectedHash {
+                        resource_position: 0,
+                        hash: 0x12345678
+                    },
+                    ExpectedHash {
+                        resource_position: 0,
+                        hash: 0x12345678
+                    }
+                ]
+            ),
+            Err(ConsistencyError::InvalidManifest)
+        );
+        let mut truncated = frame.to_vec();
+        truncated[0] = 5;
+        assert_eq!(
+            validate_hash_response(&truncated, 1, 1, &expected),
+            Err(ConsistencyError::Malformed)
+        );
+    }
 
     #[test]
     fn rejects_unsupported_and_out_of_range_fields() {
