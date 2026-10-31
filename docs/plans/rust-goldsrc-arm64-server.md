@@ -171,6 +171,11 @@ it to the public internet.
   For the reference map, slots 0, 1 and 31 match the actual HLDS function.
   The BSP diagnostic now assembles synthetic serverinfo from the measured map
   CRC and observed zero DLL field; no serverinfo is sent to clients yet.
+- **Prepared, not integrated:** bounded outgoing normal-stream fragment framing
+  and reliable acknowledgment state with synthetic tests; the actual client
+  protocol and HLDS delta-description bytes still require independent fixtures.
+  Compression, channel integration and resource negotiation are not implemented.
+  See [sign-on fragments](../compatibility/signon-fragments.md).
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48

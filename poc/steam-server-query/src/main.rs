@@ -4,6 +4,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 mod connection;
+#[cfg(test)]
+mod fragments;
 #[cfg(feature = "steam-auth")]
 mod netchannel;
 #[cfg(test)]
