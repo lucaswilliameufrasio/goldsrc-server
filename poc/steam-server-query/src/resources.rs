@@ -147,7 +147,7 @@ pub struct ExpectedCheck {
     pub value: ExpectedValue,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsistencyError {
     InvalidLength,
     InvalidManifest,
@@ -352,9 +352,179 @@ pub fn validate_consistency_response(
     Ok(consumed)
 }
 
+/// Test-only negotiation: passing consistency does not imply resources are available.
+#[derive(Debug, PartialEq, Eq)]
+enum ResourcePhase {
+    AwaitingConsistency,
+    AwaitingResources,
+    Rejected(ConsistencyError),
+}
+
+struct ManifestEntry<'a> {
+    resource: Resource<'a>,
+    /// Present only for entries selected for consistency; never infer a digest.
+    consistency_hash: Option<[u8; 4]>,
+}
+
+struct ResourceNegotiation {
+    spawn_count: u32,
+    resource_count: usize,
+    checks: Vec<ExpectedCheck>,
+    phase: ResourcePhase,
+}
+
+impl ResourceNegotiation {
+    fn prepare(spawn_count: u32, entries: &[ManifestEntry<'_>]) -> io::Result<(Self, Vec<u8>)> {
+        let mut resources = Vec::with_capacity(entries.len());
+        let mut checks = Vec::new();
+        let mut positions = Vec::new();
+        for (position, entry) in entries.iter().enumerate() {
+            if let Some(hash) = entry.consistency_hash {
+                let position = u16::try_from(position).map_err(|_| {
+                    Error::new(ErrorKind::InvalidInput, "invalid resource position")
+                })?;
+                let check =
+                    check_from_metadata(position, hash, entry.resource.reserved, spawn_count)
+                        .map_err(|_| {
+                            Error::new(ErrorKind::InvalidInput, "invalid consistency metadata")
+                        })?;
+                checks.push(check);
+                positions.push(usize::from(position));
+            }
+            resources.push(Resource {
+                kind: entry.resource.kind,
+                filename: entry.resource.filename,
+                index: entry.resource.index,
+                download_size: entry.resource.download_size,
+                flags: entry.resource.flags,
+                reserved: entry.resource.reserved,
+            });
+        }
+        let selected = if checks.is_empty() {
+            None
+        } else {
+            Some(positions.as_slice())
+        };
+        let message = encode_with_consistency(spawn_count, &resources, selected)?;
+        let phase = if checks.is_empty() {
+            ResourcePhase::AwaitingResources
+        } else {
+            ResourcePhase::AwaitingConsistency
+        };
+        Ok((
+            Self {
+                spawn_count,
+                resource_count: resources.len(),
+                checks,
+                phase,
+            },
+            message,
+        ))
+    }
+
+    fn receive_consistency(&mut self, frame: &[u8]) -> Result<usize, ConsistencyError> {
+        if self.phase != ResourcePhase::AwaitingConsistency {
+            return Err(ConsistencyError::Malformed);
+        }
+        match validate_consistency_response(
+            frame,
+            self.spawn_count,
+            self.resource_count,
+            &self.checks,
+        ) {
+            Ok(consumed) => {
+                self.phase = ResourcePhase::AwaitingResources;
+                Ok(consumed)
+            }
+            Err(error) => {
+                self.phase = ResourcePhase::Rejected(error);
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn negotiation_entry(hash: Option<[u8; 4]>) -> ManifestEntry<'static> {
+        ManifestEntry {
+            resource: Resource {
+                kind: 0,
+                filename: "test.wav",
+                index: 1,
+                download_size: 10,
+                flags: 0,
+                reserved: [0; 32],
+            },
+            consistency_hash: hash,
+        }
+    }
+
+    #[test]
+    fn negotiation_binds_manifest_checks_and_rejects_replays() {
+        let entries = [negotiation_entry(Some(7_u32.to_le_bytes()))];
+        let (mut session, message) = ResourceNegotiation::prepare(1, &entries).unwrap();
+        assert_eq!(
+            message,
+            encode_with_consistency(1, &[negotiation_entry(None).resource], Some(&[0])).unwrap()
+        );
+        assert_eq!(session.phase, ResourcePhase::AwaitingConsistency);
+        assert_eq!(
+            session.receive_consistency(&synthetic_hash_frame(&[(0, 7)])),
+            Ok(8)
+        );
+        assert_eq!(session.phase, ResourcePhase::AwaitingResources);
+        assert_eq!(
+            session.receive_consistency(&synthetic_hash_frame(&[(0, 7)])),
+            Err(ConsistencyError::Malformed)
+        );
+        assert_eq!(session.phase, ResourcePhase::AwaitingResources);
+        let (mut rejected, _) = ResourceNegotiation::prepare(1, &entries).unwrap();
+        assert_eq!(
+            rejected.receive_consistency(&synthetic_hash_frame(&[(0, 8)])),
+            Err(ConsistencyError::HashMismatch)
+        );
+        assert_eq!(
+            rejected.phase,
+            ResourcePhase::Rejected(ConsistencyError::HashMismatch)
+        );
+        assert_eq!(
+            rejected.receive_consistency(&synthetic_hash_frame(&[(0, 7)])),
+            Err(ConsistencyError::Malformed)
+        );
+        assert_eq!(
+            rejected.phase,
+            ResourcePhase::Rejected(ConsistencyError::HashMismatch)
+        );
+    }
+
+    #[test]
+    fn negotiation_without_checks_still_requires_resources() {
+        let (mut session, message) =
+            ResourceNegotiation::prepare(1, &[negotiation_entry(None)]).unwrap();
+        assert_eq!(
+            message,
+            encode(1, &[negotiation_entry(None).resource]).unwrap()
+        );
+        assert_eq!(session.phase, ResourcePhase::AwaitingResources);
+        assert_eq!(
+            session.receive_consistency(&[]),
+            Err(ConsistencyError::Malformed)
+        );
+        let (mut session, _) =
+            ResourceNegotiation::prepare(1, &[negotiation_entry(Some(7_u32.to_le_bytes()))])
+                .unwrap();
+        assert_eq!(
+            session.receive_consistency(&[0, 0]),
+            Err(ConsistencyError::InvalidLength)
+        );
+        assert_eq!(
+            session.phase,
+            ResourcePhase::Rejected(ConsistencyError::InvalidLength)
+        );
+    }
 
     #[test]
     fn hash_metadata_and_invalid_positions_are_checked() {

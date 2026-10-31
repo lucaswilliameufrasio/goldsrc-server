@@ -219,6 +219,14 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 
 ## Resource-message subset
 
+The test-only `ResourceNegotiation` prepares the outgoing manifest and derives
+the expected checks from the same explicitly selected entries and spawn count.
+It validates a consistency response only while one is pending, rejects a
+malformed or inconsistent response terminally, and rejects replay. A successful
+response advances only to awaiting resources: downloads and actual availability
+are not implemented or presumed. No caller connects this state to Steam or the
+live netchannel; it does not implement the game DLL mismatch callback.
+
 `src/resources.rs` is compiled only in tests and encodes `svc_resourcerequest`
 and `svc_resourcelist` for explicit resources and optional consistency indices,
 without a download URL or custom hashes. Nonzero 32-byte reserved fields are
