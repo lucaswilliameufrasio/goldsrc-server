@@ -1,8 +1,8 @@
 # Sign-on delta descriptions and outgoing fragmentation
 
 Status: isolated fragment framing/state prototype; not used by the live server.
-Delta-description serialization is an offline diagnostic only; compression and
-complete sign-on remain open.
+Delta descriptions can be prepared at startup from explicit local inputs, but
+are not sent to clients. Compression and complete sign-on remain open.
 
 ## Local HLDS binary evidence
 
@@ -38,6 +38,36 @@ structures rather than decoding the output; the verification does not require
 network access or Steam credentials. The diagnostic supports this bounded subset
 and does not parse `delta.lst`, supply runtime schemas, implement callback
 behavior, or establish compatibility for all mods and values.
+
+### Startup preparation from local inputs
+
+`src/delta.rs` also prepares descriptions directly from the local `delta.lst`:
+field order, types, bit widths and multipliers come from that file; schema order
+and field offsets come from an explicitly supplied local catalog. Currently the
+catalog is the TSV produced by the GDB script above. The loader uses only its
+schema/field names and offsets for generation, but validates the complete format.
+It does **not** obtain offsets from `delta.lst`, verify the catalog's build or
+ABI provenance, or independently generate offsets for another architecture.
+The operator must supply a matching catalog from the same GoldSrc definitions.
+Each input is bounded to 64 KiB. Unsupported syntax and missing fields fail
+closed before the UDP socket is opened.
+
+This is a staging mechanism, not an authorization to distribute Valve data and
+not a substitute for owned engine structure layouts. The parser records the
+names of conditional callbacks but does not implement or execute them; metadata
+is prepared only, never transmitted. A comparison of this startup path using
+the reference `delta.lst` and local offset catalog matched all 6027 HLDS bytes.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --lib \
+  generated_list_matches_local_hlds -- --ignored
+```
+
+Opt in at startup by setting both `GOLDSRC_DELTA_LIST` and
+`GOLDSRC_DELTA_CATALOG` to files the operator may use locally. If only one is
+set, startup fails. If neither is set, behavior is unchanged. A successful preparation
+does not enable sign-on; the server still deliberately disconnects after `new`.
 
 Run the explicit local-only comparison (fails if the two captures are missing):
 
@@ -83,9 +113,9 @@ Steam authentication and cleanup behavior are unchanged.
 ## Required subsequent work
 
 1. Establish redistribution rights before committing any derived vectors.
-2. Implement runtime schema generation from licensed local data, including actual
-   field offsets and quantization semantics, and handle game-specific callbacks.
-   The current independently compared encoder is offline-only.
+2. Replace the reference-derived offset catalog with verified owned structure
+   layouts and implement game-specific callback behavior before using schemas
+   for actual entity updates. The current prepared descriptions are not sent.
 3. Integrate fragmentation with the authenticated channel's sequence/ACK
    lifecycle and optional compression; exercise packet loss, retries, and a
    complete reassembly against a reference implementation.

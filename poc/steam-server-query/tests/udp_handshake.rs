@@ -32,6 +32,8 @@ fn should_serve_query_and_game_challenge_over_udp() {
         .env("LISTEN_ADDRESS", address.to_string())
         .env_remove("GOLDSRC_PACKET_TRACE")
         .env_remove("GOLDSRC_STEAM_API")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
         .stdout(Stdio::null());
     #[cfg(feature = "packet-trace")]
     let trace = TraceFile(std::env::temp_dir().join(format!(
@@ -157,4 +159,16 @@ fn should_serve_query_and_game_challenge_over_udp() {
             assert_eq!(permissions & 0o777, 0o600);
         }
     }
+}
+
+#[test]
+fn delta_configuration_must_be_complete_before_startup() {
+    let output = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"))
+        .env("GOLDSRC_DELTA_LIST", "unused")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_STEAM_API")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must be supplied together"));
 }

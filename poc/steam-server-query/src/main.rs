@@ -31,6 +31,30 @@ const PROTOCOL_VERSION: u8 = 48;
 const CHALLENGE: i32 = 0x4353_3136;
 
 fn main() -> std::io::Result<()> {
+    let delta_list = std::env::var_os("GOLDSRC_DELTA_LIST");
+    let delta_catalog = std::env::var_os("GOLDSRC_DELTA_CATALOG");
+    let _prepared_delta = match (delta_list, delta_catalog) {
+        (None, None) => None,
+        (Some(list), Some(catalog)) => {
+            let prepared = steam_server_query_poc::delta::load(
+                std::path::Path::new(&list),
+                std::path::Path::new(&catalog),
+            )?;
+            eprintln!(
+                "Delta metadata prepared: {} schemas, {} fields, {} bytes; callbacks not implemented; sign-on disabled",
+                prepared.schemas,
+                prepared.fields,
+                prepared.bytes.len()
+            );
+            Some(prepared)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "GOLDSRC_DELTA_LIST and GOLDSRC_DELTA_CATALOG must be supplied together",
+            ));
+        }
+    };
     #[cfg(not(feature = "steam-auth"))]
     if std::env::var_os("GOLDSRC_STEAM_API").is_some() {
         return Err(io::Error::other(
