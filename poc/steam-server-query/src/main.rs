@@ -10,6 +10,8 @@ mod fragments;
 mod netchannel;
 #[cfg(test)]
 mod serverinfo;
+#[cfg(test)]
+mod signon;
 #[cfg(feature = "steam-auth")]
 mod steam;
 use connection::Connections;

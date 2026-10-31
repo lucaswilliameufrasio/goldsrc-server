@@ -736,4 +736,60 @@ mod tests {
             file.write_all(&data).unwrap();
         }
     }
+
+    #[test]
+    #[ignore = "requires local HLDS delta inputs"]
+    fn prepared_signon_reassembles_via_fragment_channel() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let root = std::path::Path::new(&root);
+        let delta = steam_server_query_poc::delta::load(
+            &root.join("reference-hlds/cstrike/delta.lst"),
+            &root.join("hlds-delta-fields-build10211.tsv"),
+        )
+        .unwrap();
+        let expected = crate::signon::tests::synthetic(&delta.bytes)
+            .encode()
+            .unwrap();
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        assert!(
+            sessions
+                .queue_fragments(peer(1), expected.clone(), now)
+                .is_err()
+        );
+        sessions.approve(peer(1), now).unwrap();
+        let mut output = sessions
+            .queue_fragments(peer(1), expected.clone(), now)
+            .unwrap();
+        let mut combined = Vec::new();
+        let mut index = 1_u16;
+        let mut reliable_ack = false;
+        loop {
+            let seq = u32::from_le_bytes(output[..4].try_into().unwrap());
+            assert_eq!(seq & (RELIABLE | FRAGMENT), RELIABLE | FRAGMENT);
+            let mut body = output[8..].to_vec();
+            munge(&mut body, seq as u8, false);
+            let id = u32::from_le_bytes(body[1..5].try_into().unwrap());
+            assert_eq!(id >> 16, u32::from(index));
+            let count = id & 0xffff;
+            let len = usize::from(u16::from_le_bytes(body[7..9].try_into().unwrap()));
+            assert_eq!(&body[5..7], &[0, 0]);
+            assert_eq!(body[9], 0);
+            combined.extend_from_slice(&body[10..10 + len]);
+            reliable_ack = !reliable_ack;
+            let ack = (seq & SEQUENCE_MASK) | if reliable_ack { RELIABLE } else { 0 };
+            let update = sessions
+                .receive(peer(1), &packet(u32::from(index), ack, b"\x01"), now)
+                .unwrap();
+            if u32::from(index) == count {
+                assert_eq!(update.outcome, "netchan_fragments_complete");
+                break;
+            }
+            output = update.packet.unwrap();
+            index += 1;
+        }
+        assert!(index > 1);
+        assert_eq!(combined, expected);
+    }
 }

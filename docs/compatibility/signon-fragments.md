@@ -148,6 +148,39 @@ deliberately disconnects. The queue does not implement compression, incoming
 fragment reassembly, or file streams. This is not a working `serverinfo` or
 sign-on. Existing Steam authentication and cleanup behavior are unchanged.
 
+## Prepared serverinfo message
+
+`src/signon.rs` is compiled only in tests. It assembles the HLDS
+`SV_SendServerinfo` message: optional print banner, serverinfo, extra info,
+delta descriptions, movevars, CD track and view entity. It accepts explicit
+session data and movevars; it does not infer live settings, validate a delta
+byte stream, transmit anything, or implement later `SV_New_f` messages such as
+user registrations and full server information. Resource exchange is absent.
+
+On 2026-10-31, GDB called the official HLDS build 10211
+`SV_WriteMovevarsToClient` and `SV_SendServerinfo` at `SV_ActivateServer` in
+the same isolated setup described above, using a local client slot without any
+network client or ticket. Its output stayed ignored in `fixtures/local/` as
+`hlds-movevars-build10211.bin` and `hlds-serverinfo-build10211.bin`. The Rust
+test loads delta inputs separately, uses the observed movevars and extracts the
+variable hostname, map name and map cycle from the capture. The generated
+movevars matched all 102 bytes and the full assembled message matched all
+6413 bytes. This is one configuration, not independent verification of every
+field or a successful client connection.
+
+Another opt-in test feeds an assembled message using the real local delta input
+through the approved-channel fragment path and reconstructs it with a synthetic
+receiver. These tests do not enable any live caller:
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  assembled_message_matches_hlds -- --ignored
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  prepared_signon_reassembles_via_fragment_channel -- --ignored
+```
+
 ## Required subsequent work
 
 1. Establish redistribution rights before committing any derived vectors.
@@ -156,5 +189,6 @@ sign-on. Existing Steam authentication and cleanup behavior are unchanged.
    for actual entity updates. The current prepared descriptions are not sent.
 3. Validate loss/retransmission and the complete exchange against the official
    client; implement any needed compression and incoming streams.
-4. Supply real map/client data, resource manifests, delta and movevars together;
-   only then enable an opt-in serverinfo/sign-on test with the official client.
+4. Supply validated live map/client/session data and remaining `SV_New_f`
+   messages and resource manifests; only then enable an opt-in sign-on test
+   with the official client.
