@@ -1,7 +1,8 @@
 # Sign-on delta descriptions and outgoing fragmentation
 
 Status: isolated fragment framing/state prototype; not used by the live server.
-Delta-description serialization, compression and complete sign-on remain open.
+Delta-description serialization is an offline diagnostic only; compression and
+complete sign-on remain open.
 
 ## Local HLDS binary evidence
 
@@ -17,9 +18,41 @@ The resulting binary is local only, at
 `fixtures/local/hlds-delta-build10211.bin` (SHA-256
 `0a80697b50614b6d4ba36faeb36423c50e0f75101016149689119d445e71a3bb`).
 It is ignored by Git; redistribution rights have not been established. This
-is direct output from the engine function, not a captured network exchange and
-not yet a validated Rust fixture. It does not establish complete sign-on or
+is direct output from the engine function, not a captured network exchange.
+It does not establish complete sign-on or
 fragment interoperability.
+
+The registered fields were extracted independently from `g_sv_delta` at the
+same breakpoint in a second isolated HLDS run using
+`poc/steam-server-query/examples/hlds_delta_fields.gdb`. Its output is also
+ignored and stays local: `fixtures/local/hlds-delta-fields-build10211.tsv`.
+The observed registry contains seven schemas and 213 fields. Each field includes
+the runtime type, name, offset, size, significant bits and two multipliers;
+conditional encoder callbacks are not represented by the transmitted metadata.
+
+`examples/delta_reference.rs` serializes these inputs, writing the seven-member
+meta-delta mask and little-endian bit stream, and compares the entire result
+against the separate HLDS binary capture. The local build 10211 comparison
+matched all **6027 bytes**. The input data came from the engine's in-memory
+structures rather than decoding the output; the verification does not require
+network access or Steam credentials. The diagnostic supports this bounded subset
+and does not parse `delta.lst`, supply runtime schemas, implement callback
+behavior, or establish compatibility for all mods and values.
+
+Run the explicit local-only comparison (fails if the two captures are missing):
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --example delta_reference \
+  matches_local_hlds_capture -- --ignored
+```
+
+The default tests do not require or redistribute proprietary inputs. To
+regenerate field input, use the GDB script inside a network-disabled rootless
+container with the reference installation mounted read-only at `/data/hlds`
+and an ignored local output directory mounted at `/out`. The script refuses to
+overwrite an existing field capture. Compare only captures from matching builds
+and configuration; verify licensing before redistributing either file.
 
 The local official CS installation contains `cstrike/delta.lst`; its fields
 include game-specific names, bit widths, scaling and encoder names. The HLDS
@@ -49,11 +82,10 @@ Steam authentication and cleanup behavior are unchanged.
 
 ## Required subsequent work
 
-1. Characterize the local HLDS binary evidence and its registered input fields;
-   establish redistribution rights before committing any derived vectors.
-2. Implement bounded bit encoding and delta description schema generation,
-   including actual field offsets and quantization semantics, and compare bytes
-   against the reference. Respect game-specific encoding callbacks.
+1. Establish redistribution rights before committing any derived vectors.
+2. Implement runtime schema generation from licensed local data, including actual
+   field offsets and quantization semantics, and handle game-specific callbacks.
+   The current independently compared encoder is offline-only.
 3. Integrate fragmentation with the authenticated channel's sequence/ACK
    lifecycle and optional compression; exercise packet loss, retries, and a
    complete reassembly against a reference implementation.
