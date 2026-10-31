@@ -10,6 +10,7 @@ pub struct Resource<'a> {
     pub download_size: u32,
     /// Only RES_FATALIFMISSING and RES_WASMISSING are supported.
     pub flags: u8,
+    pub reserved: [u8; 32],
 }
 
 struct Bits {
@@ -36,7 +37,7 @@ impl Bits {
     }
 }
 
-/// Encode an uncompressed list with no URL, custom data, reserved data or consistency checks.
+/// Encode an uncompressed list with no URL, custom data or consistency checks.
 pub fn encode(spawn_count: u32, resources: &[Resource<'_>]) -> io::Result<Vec<u8>> {
     if resources.len() > 4095 {
         return Err(Error::new(ErrorKind::InvalidInput, "too many resources"));
@@ -64,7 +65,13 @@ pub fn encode(spawn_count: u32, resources: &[Resource<'_>]) -> io::Result<Vec<u8
         bits.write(u32::from(resource.index), 12)?;
         bits.write(resource.download_size, 24)?;
         bits.write(u32::from(resource.flags), 3)?;
-        bits.write(0, 1)?; // no reserved data
+        let has_reserved = resource.reserved.iter().any(|byte| *byte != 0);
+        bits.write(u32::from(has_reserved), 1)?;
+        if has_reserved {
+            for byte in resource.reserved {
+                bits.write(u32::from(byte), 8)?;
+            }
+        }
     }
     bits.write(0, 1)?; // no consistency list
     if bits.data.len() + 10 > MAX_MESSAGE {
@@ -93,6 +100,7 @@ mod tests {
             index: 1,
             download_size: 10,
             flags: 0,
+            reserved: [0; 32],
         };
         assert!(encode(1, &[Resource { flags: 4, ..base }]).is_err());
         let base = Resource {
@@ -101,6 +109,7 @@ mod tests {
             index: 1,
             download_size: 10,
             flags: 0,
+            reserved: [0; 32],
         };
         assert!(
             encode(
@@ -118,6 +127,7 @@ mod tests {
             index: 1,
             download_size: 10,
             flags: 0,
+            reserved: [0; 32],
         };
         assert!(
             encode(
@@ -141,6 +151,34 @@ mod tests {
     }
 
     #[test]
+    fn nonzero_reserved_data_is_emitted_instead_of_discarded() {
+        let plain = Resource {
+            kind: 0,
+            filename: "test",
+            index: 1,
+            download_size: 4,
+            flags: 0,
+            reserved: [0; 32],
+        };
+        let with_reserved = Resource {
+            reserved: [7; 32],
+            ..plain
+        };
+        let plain = Resource {
+            kind: 0,
+            filename: "test",
+            index: 1,
+            download_size: 4,
+            flags: 0,
+            reserved: [0; 32],
+        };
+        let old = encode(1, &[plain]).unwrap();
+        let new = encode(1, &[with_reserved]).unwrap();
+        assert_eq!(new.len(), old.len() + 32);
+        assert_ne!(new, old);
+    }
+
+    #[test]
     #[ignore = "requires synthetic local HLDS resource capture"]
     fn resource_list_matches_hlds() {
         let root =
@@ -155,6 +193,7 @@ mod tests {
                 index: 1,
                 download_size: 1234,
                 flags: 0,
+                reserved: [0; 32],
             },
             Resource {
                 kind: 2,
@@ -162,8 +201,49 @@ mod tests {
                 index: 12,
                 download_size: 4567,
                 flags: 1,
+                reserved: [0; 32],
             },
         ];
+        assert_eq!(encode(1, &resources).unwrap(), expected);
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS manifest capture with consistency disabled"]
+    fn local_manifest_matches_hlds_without_consistency() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let root = std::path::Path::new(&root);
+        let input = std::fs::read_to_string(root.join("hlds-manifest-10211-v2.tsv")).unwrap();
+        let expected = std::fs::read(root.join("hlds-manifest-10211-v2.bin")).unwrap();
+        let mut resources = Vec::new();
+        let mut reserved_count = 0;
+        for line in input.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 6);
+            let flags: u8 = fields[4].parse().unwrap();
+            // The capture explicitly disables consistency; only its marker may be omitted.
+            assert_eq!(flags & !0x83, 0);
+            let raw = fields[5].as_bytes();
+            assert_eq!(raw.len(), 64);
+            let mut reserved = [0_u8; 32];
+            for (index, pair) in raw.as_chunks::<2>().0.iter().enumerate() {
+                reserved[index] =
+                    u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+            }
+            if reserved.iter().any(|byte| *byte != 0) {
+                reserved_count += 1;
+            }
+            resources.push(Resource {
+                filename: fields[0],
+                kind: fields[1].parse().unwrap(),
+                index: fields[2].parse().unwrap(),
+                download_size: fields[3].parse().unwrap(),
+                flags: flags & 3,
+                reserved,
+            });
+        }
+        assert_eq!(resources.len(), 781);
+        assert_eq!(reserved_count, 52);
         assert_eq!(encode(1, &resources).unwrap(), expected);
     }
 }

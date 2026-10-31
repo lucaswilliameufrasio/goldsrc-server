@@ -181,6 +181,12 @@ one-argument `SV_SendUserReg` instead reads `sv_gpNewUserMsgs`. Registration
 promotion and callback outcomes during a real client connection remain
 unverified; no fake Steam approval or game connection was performed here.
 
+At the end of `SV_ActivateServer` a hardware watchpoint on `sv_gpUserMsgs`
+subsequently stopped inside `Host_Map`: the consolidated pointer changed from
+null to the then-pending list pointer. This establishes the initial map-load
+promotion for this build, not what a `ClientConnect` callback later registers
+or how a rejected/approved real client proceeds.
+
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \
@@ -215,17 +221,31 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 
 `src/resources.rs` is compiled only in tests and encodes `svc_resourcerequest`
 and `svc_resourcelist` for explicit resources without a download URL, custom
-hashes, reserved data or consistency entries. Unsupported flags are rejected;
+hashes or consistency entries. Nonzero 32-byte reserved fields are serialized;
+unsupported flags are rejected;
 the encoder does not scan a map or filesystem, transfer resources, process a
 client response, or provide live negotiation. In an isolated HLDS 10211 process
 `examples/hlds_resources.gdb` supplied two synthetic entries and called
 `SV_SendResources`. The generated Rust result matched the captured 54 bytes.
 That capture stays ignored at `fixtures/local/hlds-resources-synthetic.bin`.
 
+An additional capture from the installed `de_dust2` reference after activation
+contained 781 resources, including 52 with nonzero reserved fields, and 62
+consistency entries. `examples/hlds_resource_manifest.gdb` exports the resource
+metadata and calls the official HLDS with consistency **disabled only in its
+isolated process**. The test matches all 19259 resulting bytes using the 781
+local entries; it explicitly omits the consistency marker from the input to
+match that deliberately modified HLDS run. This does not validate the normal
+62-entry consistency list or a real resource negotiation. Both reference files
+remain ignored in `fixtures/local/`; do not redistribute without rights.
+
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \
   resource_list_matches_hlds -- --ignored
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  local_manifest_matches_hlds_without_consistency -- --ignored
 ```
 
 ## Required subsequent work
