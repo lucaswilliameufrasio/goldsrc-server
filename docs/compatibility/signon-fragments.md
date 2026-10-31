@@ -249,7 +249,7 @@ for larger gaps; unrepresentable absolute positions are rejected rather than
 truncated. This validates the outgoing serialization in one configuration,
 not a client's response or actual enforcement of file checks.
 
-### Consistency response: hash subset
+### Consistency response: hashes and model bounds
 
 The test-only `validate_hash_response` reads the signed 16-bit payload length,
 reverses `COM_Munge` with the spawn count, and parses 1-bit entry markers,
@@ -257,9 +257,13 @@ reverses `COM_Munge` with the spawn count, and parses 1-bit entry markers,
 for every explicitly supplied expected hash and rejects unknown, duplicate,
 missing, truncated or mismatched entries. These duplicate/omission checks are
 intentionally stricter than simply counting entries in the reference code.
-Only hash-based checks are supported; model bounds and game-DLL
-`InconsistentFile` callback policy are not implemented. A hash match is not
-Steam authentication or a security guarantee.
+The test-only `validate_consistency_response` additionally handles exact bounds,
+specified bounds, and specified bounds if available (all six values `-1`).
+It rejects nonfinite values, inverted bounds and invalid expected bounds as a
+deliberately stricter safety policy. Expected bounds must be provided explicitly;
+this parser does not yet decode the HLDS-munged reserved metadata itself.
+The game-DLL `InconsistentFile` callback policy is not implemented. A hash match
+is not Steam authentication or a security guarantee.
 
 In isolated HLDS 10211, `examples/hlds_consistency_response.gdb` used the
 engine's own bit writer and `COM_Munge` to create a synthetic one-file hash
@@ -268,6 +272,22 @@ The HLDS accepted it (`msg_badread=0` and `has_force_unmodified=0`). Rust
 accepts those same eight bytes and rejects a wrong hash, invalid lengths and
 other malformed synthetic responses. No real client, ticket or game connection
 was used. The parser is not connected to live traffic.
+
+An independent synthetic three-model fixture was produced and accepted by the
+official HLDS using its bit writer, `COM_Munge` and `SV_ParseConsistencyResponse`;
+it covered the three bounds modes and was accepted by Rust byte for byte. The
+ignored fixture remains at `fixtures/local/hlds-consistency-bounds-synthetic.bin`.
+`examples/hlds_inconsistent_bounds.gdb` separately observed that an exact
+bounds mismatch reached the actual CS game DLL `InconsistentFile` callback;
+the debugger stopped at callback entry, so its return policy was not observed.
+Rust deliberately returns `BoundsMismatch` instead of assuming callback approval.
+Neither test uses a network client or provides evidence of playable sign-on.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  model_bounds_response_matches_hlds -- --ignored
+```
 
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \

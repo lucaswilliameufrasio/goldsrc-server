@@ -133,12 +133,26 @@ pub struct ExpectedHash {
     pub hash: u32,
 }
 
+#[derive(Clone, Copy)]
+pub enum ExpectedValue {
+    Hash(u32),
+    SameBounds { mins: [f32; 3], maxs: [f32; 3] },
+    WithinBounds { mins: [f32; 3], maxs: [f32; 3] },
+    WithinBoundsIfAvailable { mins: [f32; 3], maxs: [f32; 3] },
+}
+
+pub struct ExpectedCheck {
+    pub resource_position: u16,
+    pub value: ExpectedValue,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConsistencyError {
     InvalidLength,
     InvalidManifest,
     Malformed,
     HashMismatch,
+    BoundsMismatch(u16),
 }
 
 fn unmunge_response(data: &mut [u8], spawn_count: u32) {
@@ -185,6 +199,23 @@ pub fn validate_hash_response(
     resource_count: usize,
     expected: &[ExpectedHash],
 ) -> Result<usize, ConsistencyError> {
+    let checks: Vec<_> = expected
+        .iter()
+        .map(|item| ExpectedCheck {
+            resource_position: item.resource_position,
+            value: ExpectedValue::Hash(item.hash),
+        })
+        .collect();
+    validate_consistency_response(frame, spawn_count, resource_count, &checks)
+}
+
+/// Reject inconsistent files; this does not implement a game-DLL override callback.
+pub fn validate_consistency_response(
+    frame: &[u8],
+    spawn_count: u32,
+    resource_count: usize,
+    expected: &[ExpectedCheck],
+) -> Result<usize, ConsistencyError> {
     if frame.len() < 2 {
         return Err(ConsistencyError::InvalidLength);
     }
@@ -201,7 +232,20 @@ pub fn validate_hash_response(
         if index >= resource_count || checks[index].is_some() {
             return Err(ConsistencyError::InvalidManifest);
         }
-        checks[index] = Some(item.hash);
+        match item.value {
+            ExpectedValue::Hash(_) => {}
+            ExpectedValue::SameBounds { mins, maxs }
+            | ExpectedValue::WithinBounds { mins, maxs }
+            | ExpectedValue::WithinBoundsIfAvailable { mins, maxs } => {
+                for axis in 0..3 {
+                    if !mins[axis].is_finite() || !maxs[axis].is_finite() || mins[axis] > maxs[axis]
+                    {
+                        return Err(ConsistencyError::InvalidManifest);
+                    }
+                }
+            }
+        }
+        checks[index] = Some(item.value);
     }
     let consumed = usize::from(length as u16) + 2;
     let mut decoded = frame[2..consumed].to_vec();
@@ -213,13 +257,47 @@ pub fn validate_hash_response(
     let mut count = 0_usize;
     while reader.read(1)? != 0 {
         let index = reader.read(12)? as usize;
-        let expected_hash = checks
+        let check = checks
             .get_mut(index)
             .and_then(Option::take)
             .ok_or(ConsistencyError::Malformed)?;
-        let actual_hash = reader.read(32)?;
-        if actual_hash != expected_hash {
-            return Err(ConsistencyError::HashMismatch);
+        match check {
+            ExpectedValue::Hash(expected_hash) => {
+                if reader.read(32)? != expected_hash {
+                    return Err(ConsistencyError::HashMismatch);
+                }
+            }
+            value => {
+                let mut actual = [0_f32; 6];
+                for entry in &mut actual {
+                    *entry = f32::from_bits(reader.read(32)?);
+                    if !entry.is_finite() {
+                        return Err(ConsistencyError::Malformed);
+                    }
+                }
+                let (mins, maxs, exact, allow_missing) = match value {
+                    ExpectedValue::SameBounds { mins, maxs } => (mins, maxs, true, false),
+                    ExpectedValue::WithinBounds { mins, maxs } => (mins, maxs, false, false),
+                    ExpectedValue::WithinBoundsIfAvailable { mins, maxs } => {
+                        (mins, maxs, false, true)
+                    }
+                    ExpectedValue::Hash(_) => unreachable!(),
+                };
+                if !(allow_missing && actual.iter().all(|v| *v == -1.0)) {
+                    for axis in 0..3 {
+                        let mismatch = if exact {
+                            actual[axis] != mins[axis] || actual[axis + 3] != maxs[axis]
+                        } else {
+                            actual[axis] < mins[axis]
+                                || actual[axis + 3] > maxs[axis]
+                                || actual[axis] > actual[axis + 3]
+                        };
+                        if mismatch {
+                            return Err(ConsistencyError::BoundsMismatch(index as u16));
+                        }
+                    }
+                }
+            }
         }
         count += 1;
     }
@@ -244,11 +322,15 @@ mod tests {
             bits.write(hash, 32).unwrap();
         }
         bits.write(0, 1).unwrap();
+        synthetic_frame(bits.data)
+    }
+
+    fn synthetic_frame(mut data: Vec<u8>) -> Vec<u8> {
         const TABLE: [u8; 16] = [
             0x7a, 0x64, 0x05, 0xf1, 0x1b, 0x9b, 0xa0, 0xb5, 0xca, 0xed, 0x61, 0x0d, 0x4a, 0xdf,
             0x8e, 0xc7,
         ];
-        for (word, bytes) in bits.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        for (word, bytes) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let value = (u32::from_le_bytes(*bytes) ^ !1_u32).swap_bytes();
             let mut transformed = value.to_le_bytes();
             for (index, byte) in transformed.iter_mut().enumerate() {
@@ -256,9 +338,102 @@ mod tests {
             }
             *bytes = (u32::from_le_bytes(transformed) ^ 1).to_le_bytes();
         }
-        let mut frame = (bits.data.len() as u16).to_le_bytes().to_vec();
-        frame.extend_from_slice(&bits.data);
+        let mut frame = (data.len() as u16).to_le_bytes().to_vec();
+        frame.extend_from_slice(&data);
         frame
+    }
+
+    fn synthetic_bounds_frame(index: u16, values: [f32; 6]) -> Vec<u8> {
+        let mut bits = Bits {
+            data: Vec::new(),
+            bit: 0,
+        };
+        bits.write(1, 1).unwrap();
+        bits.write(u32::from(index), 12).unwrap();
+        for value in values {
+            bits.write(value.to_bits(), 32).unwrap();
+        }
+        bits.write(0, 1).unwrap();
+        synthetic_frame(bits.data)
+    }
+
+    #[test]
+    fn model_bounds_reject_inconsistent_nonfinite_and_malformed_responses() {
+        let mins = [-1.0, -2.0, -3.0];
+        let maxs = [1.0, 2.0, 3.0];
+        let values = [-1.0, -2.0, -3.0, 1.0, 2.0, 3.0];
+        let same = [ExpectedCheck {
+            resource_position: 0,
+            value: ExpectedValue::SameBounds { mins, maxs },
+        }];
+        assert!(
+            validate_consistency_response(&synthetic_bounds_frame(0, values), 1, 1, &same).is_ok()
+        );
+        let mut outside = values;
+        outside[0] = -2.0;
+        assert_eq!(
+            validate_consistency_response(&synthetic_bounds_frame(0, outside), 1, 1, &same),
+            Err(ConsistencyError::BoundsMismatch(0))
+        );
+        let within = [ExpectedCheck {
+            resource_position: 0,
+            value: ExpectedValue::WithinBounds { mins, maxs },
+        }];
+        assert_eq!(
+            validate_consistency_response(&synthetic_bounds_frame(0, outside), 1, 1, &within),
+            Err(ConsistencyError::BoundsMismatch(0))
+        );
+        let optional = [ExpectedCheck {
+            resource_position: 0,
+            value: ExpectedValue::WithinBoundsIfAvailable { mins, maxs },
+        }];
+        assert!(
+            validate_consistency_response(&synthetic_bounds_frame(0, [-1.0; 6]), 1, 1, &optional)
+                .is_ok()
+        );
+        assert_eq!(
+            validate_consistency_response(&synthetic_bounds_frame(0, [-1.0; 6]), 1, 1, &same),
+            Err(ConsistencyError::BoundsMismatch(0))
+        );
+        let mut nan = values;
+        nan[2] = f32::NAN;
+        assert_eq!(
+            validate_consistency_response(&synthetic_bounds_frame(0, nan), 1, 1, &within),
+            Err(ConsistencyError::Malformed)
+        );
+        let frame = synthetic_bounds_frame(0, values);
+        assert_eq!(
+            validate_consistency_response(&frame[..frame.len() - 1], 1, 1, &same),
+            Err(ConsistencyError::InvalidLength)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires synthetic HLDS model-bounds capture"]
+    fn model_bounds_response_matches_hlds() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let frame = std::fs::read(
+            std::path::Path::new(&root).join("hlds-consistency-bounds-synthetic.bin"),
+        )
+        .unwrap();
+        let mins = [-1.0, -2.0, -3.0];
+        let maxs = [1.0, 2.0, 3.0];
+        let checks = [
+            ExpectedCheck {
+                resource_position: 0,
+                value: ExpectedValue::SameBounds { mins, maxs },
+            },
+            ExpectedCheck {
+                resource_position: 1,
+                value: ExpectedValue::WithinBounds { mins, maxs },
+            },
+            ExpectedCheck {
+                resource_position: 2,
+                value: ExpectedValue::WithinBoundsIfAvailable { mins, maxs },
+            },
+        ];
+        assert_eq!(validate_consistency_response(&frame, 1, 3, &checks), Ok(79));
     }
 
     #[test]
