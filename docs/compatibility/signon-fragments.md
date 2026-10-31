@@ -3,6 +3,24 @@
 Status: isolated fragment framing/state prototype; not used by the live server.
 Delta-description serialization, compression and complete sign-on remain open.
 
+## Local HLDS binary evidence
+
+On 2026-10-31, official HLDS build 10211 with the local CS installation and
+`de_dust2` was started in a rootless container with networking disabled and the
+installation mounted read-only. GDB stopped at `SV_ActivateServer`, where
+`g_sv_delta` was non-null. Before any client connected, the debugger cleared
+the isolated process's `net_message.cursize` and invoked
+`SV_WriteDeltaDescriptionsToClient(&net_message)`. The function wrote 6027
+bytes; `net_message.flags` remained zero. The process was then terminated.
+
+The resulting binary is local only, at
+`fixtures/local/hlds-delta-build10211.bin` (SHA-256
+`0a80697b50614b6d4ba36faeb36423c50e0f75101016149689119d445e71a3bb`).
+It is ignored by Git; redistribution rights have not been established. This
+is direct output from the engine function, not a captured network exchange and
+not yet a validated Rust fixture. It does not establish complete sign-on or
+fragment interoperability.
+
 The local official CS installation contains `cstrike/delta.lst`; its fields
 include game-specific names, bit widths, scaling and encoder names. The HLDS
 does not simply send this text: `SV_WriteDeltaDescriptionsToClient` serializes
@@ -31,9 +49,8 @@ Steam authentication and cleanup behavior are unchanged.
 
 ## Required subsequent work
 
-1. Obtain an independent HLDS or official-client fixture for the binary delta
-   descriptions (without persisting authentication material); establish its
-   exact metadata and license before committing derived vectors.
+1. Characterize the local HLDS binary evidence and its registered input fields;
+   establish redistribution rights before committing any derived vectors.
 2. Implement bounded bit encoding and delta description schema generation,
    including actual field offsets and quantization semantics, and compare bytes
    against the reference. Respect game-specific encoding callbacks.
