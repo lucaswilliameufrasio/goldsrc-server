@@ -103,14 +103,45 @@ reliable-bit values and capacity checks. Its header format is based on
 [`Netchan_Transmit`](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/net_chan.cpp)
 and `MAKE_FRAGID` in `net.h`; test vectors are authored, not HLDS captures.
 
+### Independent HLDS receive and reassembly check
+
+On 2026-10-31, the real Rust `Sessions` fragment path produced three synthetic
+datagrams for a 2300-byte pattern. In a second, network-isolated process, GDB
+fed those datagrams to the official HLDS build 10211 `Netchan_Process`, then
+called `Netchan_CopyNormalFragments`. The HLDS accepted sequences 1, 2, 3,
+reported reliable states 1, 0, 1, marked the normal stream ready only after the
+third fragment, and reassembled all 2300 original bytes exactly. No real client,
+Steam ticket, or network traffic was involved. This validates these uncompressed
+normal-stream packets and HLDS's receiver, not official-client sign-on, loss
+handling in HLDS, compression, incoming file streams or every fragment size.
+
+To reproduce with the separately acquired local HLDS and prebuilt local GDB
+image, first choose a clean ignored fixture directory and generate the packets:
+
+```sh
+GOLDSRC_FRAGMENT_FIXTURE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  export_fragments_for_hlds -- --ignored
+docker --context rootless run --rm --platform linux/amd64 --network none \
+  -v "$PWD/fixtures/local/reference-hlds:/data/hlds:ro" \
+  -v "$PWD/fixtures/local:/fixtures:ro" \
+  -v "$PWD/poc/steam-server-query/examples/hlds_fragment_receiver.gdb:/tmp/verify.gdb:ro" \
+  -w /data/hlds -e LD_LIBRARY_PATH=. goldsrc-hlds-crc-local \
+  timeout 30s gdb -q -batch -x /tmp/verify.gdb ./hlds_linux
+```
+
+The exporter creates `rust-fragments-hlds.bin` exclusively and refuses to
+overwrite an existing file. The second command requires that file under
+`fixtures/local`; the GDB script terminates its isolated process after the
+check. The packet fixture is synthetic but remains ignored with other captures.
+
 `netchannel::Sessions::queue_fragments` is available only on an already approved
 peer and rejects a busy channel. The channel applies the sequence/ACK bounds,
 reliable and fragment bits, Munge2, retransmission after a later negative ACK,
 periodic probes and a 15-second deadline. Revocation discards pending work. A
 test reconstructs the complete message from transmitted fragments while
-simulating packet and ACK loss; it is a synthetic receiver, not an HLDS or
-official-client interoperability test. The delayed ACK of an earlier copy after
-retransmission is accepted by the queue.
+simulating packet and ACK loss; that loss test uses a synthetic receiver. The
+delayed ACK of an earlier copy after retransmission is accepted by the queue.
 
 No production caller queues fragments yet: in particular, receiving `new` still
 deliberately disconnects. The queue does not implement compression, incoming
@@ -123,7 +154,7 @@ sign-on. Existing Steam authentication and cleanup behavior are unchanged.
 2. Replace the reference-derived offset catalog with verified owned structure
    layouts and implement game-specific callback behavior before using schemas
    for actual entity updates. The current prepared descriptions are not sent.
-3. Validate fragment transmission and reassembly against the official client or
-   independent reference; implement any needed compression and incoming streams.
+3. Validate loss/retransmission and the complete exchange against the official
+   client; implement any needed compression and incoming streams.
 4. Supply real map/client data, resource manifests, delta and movevars together;
    only then enable an opt-in serverinfo/sign-on test with the official client.

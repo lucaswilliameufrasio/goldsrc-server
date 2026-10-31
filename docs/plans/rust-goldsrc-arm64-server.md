@@ -173,7 +173,8 @@ it to the public internet.
   CRC and observed zero DLL field; no serverinfo is sent to clients yet.
 - **Integrated, not enabled in live sign-on:** bounded outgoing normal-stream
   fragments use the authenticated channel's ACK and retry state. Synthetic
-  tests cover loss and reassembly; client interoperability is not verified.
+  tests cover loss; isolated official HLDS build 10211 reassembled three Rust
+  datagrams byte for byte. Official-client interoperability is not verified.
   Local delta descriptions match HLDS bytes, while compression and resource
   negotiation remain unimplemented.
   See [sign-on fragments](../compatibility/signon-fragments.md).

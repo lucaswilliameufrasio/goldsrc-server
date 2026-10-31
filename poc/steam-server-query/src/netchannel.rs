@@ -703,4 +703,37 @@ mod tests {
         );
         assert!(!sessions.contains(peer(1)));
     }
+
+    #[test]
+    #[ignore = "writes an opt-in synthetic packet fixture for isolated HLDS verification"]
+    fn export_fragments_for_hlds() {
+        use std::io::Write;
+        let directory =
+            std::env::var_os("GOLDSRC_FRAGMENT_FIXTURE_DIR").expect("missing fixture directory");
+        let path = std::path::Path::new(&directory).join("rust-fragments-hlds.bin");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        let now = Instant::now();
+        let source: Vec<u8> = (0..2300).map(|n| n as u8).collect();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), now).unwrap();
+        let first = sessions.queue_fragments(peer(1), source, now).unwrap();
+        let second = sessions
+            .receive(peer(1), &packet(1, RELIABLE | 1, b"\x01"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        let third = sessions
+            .receive(peer(1), &packet(2, 2, b"\x01"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        for data in [first, second, third] {
+            file.write_all(&(data.len() as u32).to_le_bytes()).unwrap();
+            file.write_all(&data).unwrap();
+        }
+    }
 }
