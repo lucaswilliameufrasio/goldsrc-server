@@ -1,5 +1,7 @@
 //! Experimental resource-list wire encoding, not connected to live sign-on.
+use std::io::Read;
 use std::io::{self, Error, ErrorKind};
+use std::path::Path;
 
 const MAX_MESSAGE: usize = 65_536;
 
@@ -366,6 +368,134 @@ pub(crate) struct ManifestEntry<'a> {
     pub(crate) consistency_hash: Option<[u8; 4]>,
 }
 
+/// Explicit local snapshot; this does not prove that its assets or world are active.
+pub(crate) struct ManifestSnapshot {
+    entries: Vec<SnapshotEntry>,
+}
+
+struct SnapshotEntry {
+    filename: String,
+    kind: u8,
+    index: u16,
+    size: u32,
+    flags: u8,
+    reserved: [u8; 32],
+    hash: Option<[u8; 4]>,
+}
+
+fn snapshot_error() -> io::Error {
+    Error::new(ErrorKind::InvalidData, "invalid local resource snapshot")
+}
+
+fn snapshot_hex<const N: usize>(text: &str) -> io::Result<[u8; N]> {
+    if text.len() != N * 2 || !text.is_ascii() {
+        return Err(snapshot_error());
+    }
+    let mut bytes = [0; N];
+    for (index, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let pair = std::str::from_utf8(pair).map_err(|_| snapshot_error())?;
+        bytes[index] = u8::from_str_radix(pair, 16).map_err(|_| snapshot_error())?;
+    }
+    Ok(bytes)
+}
+
+fn read_snapshot(path: &Path) -> io::Result<String> {
+    const LIMIT: usize = 1024 * 1024;
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(snapshot_error());
+    }
+    let mut bytes = Vec::new();
+    file.take((LIMIT + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > LIMIT {
+        return Err(snapshot_error());
+    }
+    String::from_utf8(bytes).map_err(|_| snapshot_error())
+}
+
+impl ManifestSnapshot {
+    pub(crate) fn load(manifest: &Path, checks: &Path, spawn_count: u32) -> io::Result<Self> {
+        let manifest = read_snapshot(manifest)?;
+        let checks = read_snapshot(checks)?;
+        Self::parse(&manifest, &checks, spawn_count)
+    }
+
+    fn parse(manifest: &str, checks: &str, spawn_count: u32) -> io::Result<Self> {
+        let mut entries = Vec::new();
+        let mut selected = Vec::new();
+        for line in manifest.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            if fields.len() != 6 || entries.len() >= 4095 {
+                return Err(snapshot_error());
+            }
+            let flags: u8 = fields[4].parse().map_err(|_| snapshot_error())?;
+            if flags & !0x83 != 0 {
+                return Err(snapshot_error());
+            }
+            selected.push(flags & 0x80 != 0);
+            entries.push(SnapshotEntry {
+                filename: fields[0].to_owned(),
+                kind: fields[1].parse().map_err(|_| snapshot_error())?,
+                index: fields[2].parse().map_err(|_| snapshot_error())?,
+                size: fields[3].parse().map_err(|_| snapshot_error())?,
+                flags: flags & 3,
+                reserved: snapshot_hex(fields[5])?,
+                hash: None,
+            });
+        }
+        if entries.is_empty() {
+            return Err(snapshot_error());
+        }
+        for line in checks.lines() {
+            let fields: Vec<_> = line.split('\t').collect();
+            if fields.len() != 4 {
+                return Err(snapshot_error());
+            }
+            let position: usize = fields[0].parse().map_err(|_| snapshot_error())?;
+            let entry = entries.get_mut(position).ok_or_else(snapshot_error)?;
+            if !selected[position]
+                || entry.hash.is_some()
+                || entry.reserved != snapshot_hex(fields[2])?
+            {
+                return Err(snapshot_error());
+            }
+            // The fourth column is reference output only, never a source of trust.
+            let _: [u8; 32] = snapshot_hex(fields[3])?;
+            let hash = snapshot_hex(fields[1])?;
+            check_from_metadata(position as u16, hash, entry.reserved, spawn_count)
+                .map_err(|_| snapshot_error())?;
+            entry.hash = Some(hash);
+        }
+        for (index, entry) in entries.iter().enumerate() {
+            if selected[index] != entry.hash.is_some() {
+                return Err(snapshot_error());
+            }
+        }
+        let snapshot = Self { entries };
+        ResourceNegotiation::prepare(spawn_count, &snapshot.entries())
+            .map_err(|_| snapshot_error())?;
+        Ok(snapshot)
+    }
+
+    pub(crate) fn entries(&self) -> Vec<ManifestEntry<'_>> {
+        let mut result = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            result.push(ManifestEntry {
+                resource: Resource {
+                    kind: entry.kind,
+                    filename: &entry.filename,
+                    index: entry.index,
+                    download_size: entry.size,
+                    flags: entry.flags,
+                    reserved: entry.reserved,
+                },
+                consistency_hash: entry.hash,
+            });
+        }
+        result
+    }
+}
+
 pub(crate) struct ResourceNegotiation {
     spawn_count: u32,
     resource_count: usize,
@@ -454,6 +584,57 @@ impl ResourceNegotiation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_rejects_inconsistent_incomplete_and_duplicate_checks() {
+        let zeros = "00".repeat(32);
+        let manifest = format!("sound/test.wav\t0\t1\t10\t129\t{zeros}\n");
+        let checks = format!("0\t78563412\t{zeros}\t{zeros}\n");
+        let snapshot = ManifestSnapshot::parse(&manifest, &checks, 1).unwrap();
+        let entries = snapshot.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].consistency_hash, Some([0x78, 0x56, 0x34, 0x12]));
+        assert!(ManifestSnapshot::parse(&manifest, "", 1).is_err());
+        assert!(ManifestSnapshot::parse(&manifest, &format!("{checks}{checks}"), 1).is_err());
+        assert!(ManifestSnapshot::parse(&manifest, &checks.replacen("0\t", "1\t", 1), 1).is_err());
+        assert!(
+            ManifestSnapshot::parse(&manifest, &checks.replacen(&zeros, &"01".repeat(32), 1), 1)
+                .is_err()
+        );
+        assert!(ManifestSnapshot::parse(&manifest.replace("129\t", "133\t"), &checks, 1).is_err());
+        assert!(
+            ManifestSnapshot::parse(&manifest.replace("sound/test.wav", "bad\0name"), &checks, 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS manifest and consistency captures"]
+    fn snapshot_loads_reference_and_reproduces_hlds_manifest() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let root = Path::new(&root);
+        let snapshot = ManifestSnapshot::load(
+            &root.join("hlds-manifest-10211-v2.tsv"),
+            &root.join("hlds-consistency-metadata-10211.tsv"),
+            1,
+        )
+        .unwrap();
+        let entries = snapshot.entries();
+        assert_eq!(entries.len(), 781);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.consistency_hash.is_some())
+                .count(),
+            62
+        );
+        let (_, message) = ResourceNegotiation::prepare(1, &entries).unwrap();
+        assert_eq!(
+            message,
+            std::fs::read(root.join("hlds-manifest-consistency-10211.bin")).unwrap()
+        );
+    }
 
     fn negotiation_entry(hash: Option<[u8; 4]>) -> ManifestEntry<'static> {
         ManifestEntry {

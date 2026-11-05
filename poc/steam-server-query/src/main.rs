@@ -70,6 +70,44 @@ fn main() -> std::io::Result<()> {
             ));
         }
     };
+    let manifest = std::env::var_os("GOLDSRC_RESOURCE_MANIFEST");
+    let checks = std::env::var_os("GOLDSRC_RESOURCE_CHECKS");
+    let spawn = std::env::var_os("GOLDSRC_RESOURCE_SPAWN_COUNT");
+    #[cfg(feature = "steam-auth")]
+    let _prepared_resources = match (manifest, checks, spawn) {
+        (None, None, None) => None,
+        (Some(manifest), Some(checks), Some(spawn)) => {
+            let spawn = spawn
+                .to_str()
+                .and_then(|value| value.parse::<u32>().ok())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid resource spawn count")
+                })?;
+            let snapshot = resources::ManifestSnapshot::load(
+                std::path::Path::new(&manifest),
+                std::path::Path::new(&checks),
+                spawn,
+            )?;
+            eprintln!(
+                "Resource snapshot prepared: {} entries; world and sign-on disabled",
+                snapshot.entries().len()
+            );
+            Some(snapshot)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "resource manifest, checks and spawn count must be supplied together",
+            ));
+        }
+    };
+    #[cfg(not(feature = "steam-auth"))]
+    if manifest.is_some() || checks.is_some() || spawn.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "resource snapshot requires --features steam-auth",
+        ));
+    }
     #[cfg(not(feature = "steam-auth"))]
     if std::env::var_os("GOLDSRC_STEAM_API").is_some() {
         return Err(io::Error::other(

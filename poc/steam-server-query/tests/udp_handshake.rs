@@ -35,6 +35,9 @@ fn should_serve_query_and_game_challenge_over_udp() {
         .env_remove("GOLDSRC_DELTA_LIST")
         .env_remove("GOLDSRC_DELTA_CATALOG")
         .env_remove("GOLDSRC_MAP_BSP")
+        .env_remove("GOLDSRC_RESOURCE_MANIFEST")
+        .env_remove("GOLDSRC_RESOURCE_CHECKS")
+        .env_remove("GOLDSRC_RESOURCE_SPAWN_COUNT")
         .stdout(Stdio::null());
     #[cfg(feature = "packet-trace")]
     let trace = TraceFile(std::env::temp_dir().join(format!(
@@ -185,5 +188,22 @@ fn invalid_map_is_rejected_before_listening() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("map is not a regular file"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
+}
+
+#[test]
+fn incomplete_resource_snapshot_is_rejected_before_listening() {
+    let output = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"))
+        .env("GOLDSRC_RESOURCE_MANIFEST", "unused")
+        .env_remove("GOLDSRC_RESOURCE_CHECKS")
+        .env_remove("GOLDSRC_RESOURCE_SPAWN_COUNT")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .env_remove("GOLDSRC_STEAM_API")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("resource"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
 }

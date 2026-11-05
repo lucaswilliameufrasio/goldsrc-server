@@ -650,6 +650,102 @@ impl Sessions {
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore = "requires local HLDS BSP, delta and manifest captures"]
+    fn prepared_sequence_with_local_world_inputs() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let root = std::path::Path::new(&root);
+        let (_, crc) = steam_server_query_poc::map::inspect(
+            &root.join("reference-hlds/cstrike/maps/de_dust2.bsp"),
+        )
+        .unwrap();
+        let delta = steam_server_query_poc::delta::load(
+            &root.join("reference-hlds/cstrike/delta.lst"),
+            &root.join("hlds-delta-fields-build10211.tsv"),
+        )
+        .unwrap();
+        let snapshot = crate::resources::ManifestSnapshot::load(
+            &root.join("hlds-manifest-10211-v2.tsv"),
+            &root.join("hlds-consistency-metadata-10211.tsv"),
+            1,
+        )
+        .unwrap();
+        let entries = snapshot.entries();
+        let expected_manifest =
+            std::fs::read(root.join("hlds-manifest-consistency-10211.bin")).unwrap();
+        let mut signon = crate::signon::tests::synthetic(&delta.bytes);
+        signon.info.world_crc = crc;
+        let response = NewResponse {
+            serverinfo: signon,
+            user_messages: &[],
+            full_server_info: "\\hostname\\test",
+            allow_shaders: false,
+            allow_autoaim: false,
+            clients: &[],
+        };
+        let expected_signon = response.encode().unwrap();
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), now).unwrap();
+        sessions
+            .prepare_signon(peer(1), response, &entries)
+            .unwrap();
+        let mut outgoing = sessions
+            .receive(peer(1), &packet(1, 0, b"\x03new\0"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        let mut incoming = 2_u32;
+        let mut reliable = false;
+        for stage in 0..2 {
+            let mut assembled = Vec::new();
+            let mut index = 1_u32;
+            loop {
+                let raw = u32::from_le_bytes(outgoing[..4].try_into().unwrap());
+                assert_eq!(raw & (RELIABLE | FRAGMENT), RELIABLE | FRAGMENT);
+                let mut body = outgoing[8..].to_vec();
+                munge(&mut body, raw as u8, false);
+                let id = u32::from_le_bytes(body[1..5].try_into().unwrap());
+                assert_eq!(id >> 16, index);
+                let size = usize::from(u16::from_le_bytes(body[7..9].try_into().unwrap()));
+                assembled.extend_from_slice(&body[10..10 + size]);
+                reliable = !reliable;
+                let ack = (raw & SEQUENCE_MASK) | if reliable { RELIABLE } else { 0 };
+                let last = index == id & 0xffff;
+                let payload: &[u8] = if stage == 0 && last {
+                    b"\x03sendres\0"
+                } else {
+                    &[1]
+                };
+                let update = sessions
+                    .receive(peer(1), &packet(incoming, ack, payload), now)
+                    .unwrap();
+                incoming += 1;
+                outgoing = update.packet.unwrap();
+                if last {
+                    if stage == 0 {
+                        assert_eq!(update.outcome, "netchan_resource_start");
+                    } else {
+                        assert_eq!(update.outcome, "netchan_ack");
+                    }
+                    break;
+                }
+                index += 1;
+            }
+            if stage == 0 {
+                assert_eq!(assembled, expected_signon);
+            } else {
+                assert_eq!(assembled, expected_manifest);
+                assert_eq!(index, 19);
+            }
+        }
+        assert_eq!(
+            sessions.tick(now + WAIT_NEW)[0].1.outcome,
+            "netchan_consistency_timeout"
+        );
+    }
+
     fn response_for_sequence() -> NewResponse<'static> {
         NewResponse {
             serverinfo: crate::signon::tests::synthetic(&[14]),
