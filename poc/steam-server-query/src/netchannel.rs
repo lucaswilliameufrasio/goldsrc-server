@@ -139,6 +139,8 @@ struct SessionIdentity {
 
 struct Channel {
     identity: SessionIdentity,
+    #[allow(dead_code)]
+    player_name: Option<String>,
     acceptance: Vec<u8>,
     accepted: Instant,
     last_send: Instant,
@@ -153,12 +155,18 @@ struct Channel {
 }
 
 impl Channel {
-    fn new(peer: SocketAddr, identity: SessionIdentity, now: Instant) -> Self {
+    fn new(
+        peer: SocketAddr,
+        identity: SessionIdentity,
+        player_name: Option<String>,
+        now: Instant,
+    ) -> Self {
         let mut acceptance = vec![0xff; 4];
         acceptance
             .extend_from_slice(format!("B {} \"{peer}\" 0 10211\0", identity.userid).as_bytes());
         Self {
             identity,
+            player_name,
             acceptance,
             accepted: now,
             last_send: now,
@@ -554,7 +562,17 @@ impl Sessions {
     }
 
     // Production caller must have a positive Steam approval, never a basic ticket result.
+    #[cfg(test)]
     pub fn approve(&mut self, peer: SocketAddr, now: Instant) -> Result<Vec<u8>, &'static str> {
+        self.approve_with_name(peer, None, now)
+    }
+
+    pub fn approve_with_name(
+        &mut self,
+        peer: SocketAddr,
+        player_name: Option<String>,
+        now: Instant,
+    ) -> Result<Vec<u8>, &'static str> {
         if self.channels.len() >= CAPACITY || self.channels.contains_key(&peer) {
             return Err("connection_capacity");
         }
@@ -568,7 +586,7 @@ impl Sessions {
             .ok_or("connection_capacity")? as u8;
         let userid = self.next_userid;
         self.next_userid = userid.checked_add(1).ok_or("connection_capacity")?;
-        let channel = Channel::new(peer, SessionIdentity { userid, slot }, now);
+        let channel = Channel::new(peer, SessionIdentity { userid, slot }, player_name, now);
         let packet = channel.acceptance.clone();
         self.channels.insert(peer, channel);
         Ok(packet)
@@ -649,6 +667,23 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_player_name_is_session_scoped_and_removed_on_revoke() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions
+            .approve_with_name(peer(1), Some("Player".to_owned()), now)
+            .unwrap();
+        assert_eq!(
+            sessions.channels[&peer(1)].player_name.as_deref(),
+            Some("Player")
+        );
+        sessions.revoke(peer(1), now).unwrap();
+        assert!(!sessions.contains(peer(1)));
+        sessions.approve_with_name(peer(1), None, now).unwrap();
+        assert!(sessions.channels[&peer(1)].player_name.is_none());
+    }
 
     #[test]
     #[ignore = "requires local HLDS BSP, delta and manifest captures"]
@@ -1194,7 +1229,7 @@ mod tests {
     #[test]
     fn lost_reliable_message_is_resent_after_later_negative_ack() {
         let now = Instant::now();
-        let mut session = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, now);
+        let mut session = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, None, now);
         session.receive(&packet(1, 0, b"\x03new\0"), now);
         let probe = session.tick(now + PROBE_INTERVAL).unwrap().packet.unwrap();
         assert_eq!(u32::from_le_bytes(probe[..4].try_into().unwrap()), 2);
@@ -1216,7 +1251,7 @@ mod tests {
     #[test]
     fn invalid_packets_do_not_advance_state_and_expire() {
         let now = Instant::now();
-        let mut session = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, now);
+        let mut session = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, None, now);
         for packet in [
             vec![],
             vec![0; 7],
@@ -1242,7 +1277,7 @@ mod tests {
     #[test]
     fn fragment_and_unsupported_commands_fail_closed() {
         let now = Instant::now();
-        let mut channel = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, now);
+        let mut channel = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, None, now);
         assert_eq!(
             channel
                 .receive(&packet(FRAGMENT | 1, 0, b"\x01"), now)
@@ -1250,7 +1285,7 @@ mod tests {
             "netchan_fragment_unsupported"
         );
         assert!(channel.tick(now + CLOSE_WAIT).unwrap().finished);
-        let mut channel = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, now);
+        let mut channel = Channel::new(peer(1), SessionIdentity { userid: 1, slot: 0 }, None, now);
         assert_eq!(
             channel
                 .receive(&packet(1, 0, b"\x03exec secret\0"), now)

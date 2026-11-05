@@ -183,7 +183,8 @@ fn main() -> std::io::Result<()> {
                     )?;
                 }
                 let response = if event.outcome == "steam_auth_approved" {
-                    match sessions.approve(event.peer, Instant::now()) {
+                    match sessions.approve_with_name(event.peer, event.player_name, Instant::now())
+                    {
                         Ok(packet) => {
                             #[cfg(feature = "packet-trace")]
                             if let Some(trace) = packet_trace.as_mut() {
@@ -288,7 +289,8 @@ fn main() -> std::io::Result<()> {
                     let reply = {
                         let mut reply = reply;
                         if let (Some(runtime), Some(ticket)) = (steam.as_mut(), reply.ticket) {
-                            reply.outcome = runtime.submit(peer, ticket, Instant::now());
+                            reply.outcome =
+                                runtime.submit(peer, ticket, reply.player_name, Instant::now());
                             eprintln!("Steam diagnostic: {}", reply.outcome);
                             if reply.outcome == "steam_auth_pending" {
                                 reply.packet = None;

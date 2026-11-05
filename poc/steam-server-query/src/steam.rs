@@ -29,6 +29,7 @@ struct Callback {
 struct Pending {
     peer: SocketAddr,
     started: Instant,
+    player_name: Option<String>,
 }
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -43,11 +44,19 @@ fn auth_outcome(callback: i32, size: i32, ready: bool, age: Duration) -> &'stati
     }
 }
 
+fn approved_name(outcome: &str, name: Option<String>) -> Option<String> {
+    if outcome == "steam_auth_approved" {
+        return name;
+    }
+    None
+}
+
 pub struct Event {
     pub peer: SocketAddr,
     pub outcome: &'static str,
     pub reason: &'static str,
     pub result_code: Option<i32>,
+    pub player_name: Option<String>,
 }
 
 pub struct Steam {
@@ -203,7 +212,13 @@ impl Steam {
         None
     }
 
-    pub fn submit(&mut self, peer: SocketAddr, ticket: &[u8], now: Instant) -> &'static str {
+    pub fn submit(
+        &mut self,
+        peer: SocketAddr,
+        ticket: &[u8],
+        player_name: Option<&str>,
+        now: Instant,
+    ) -> &'static str {
         if self.server_identity().is_none() {
             return "steam_not_ready";
         }
@@ -220,8 +235,9 @@ impl Steam {
             return "invalid_ticket_length";
         }
         let mut id = 0;
-        // SAFETY: borrowed ticket is valid throughout synchronous FFI call. Only
-        // numeric identity is retained; no ticket copy/log is made by this adapter.
+        // SAFETY: borrowed ticket is valid throughout the synchronous FFI call.
+        // No ticket copy/log is made by this adapter. The bounded public name is
+        // kept separately only while the matching authentication is pending.
         let accepted = unsafe {
             (self.authenticate)(
                 self.server,
@@ -237,7 +253,14 @@ impl Steam {
         if self.pending.contains_key(&id) || self.active.contains_key(&id) {
             return "steam_auth_duplicate_identity";
         }
-        self.pending.insert(id, Pending { peer, started: now });
+        self.pending.insert(
+            id,
+            Pending {
+                peer,
+                started: now,
+                player_name: player_name.map(str::to_owned),
+            },
+        );
         "steam_auth_pending"
     }
 
@@ -293,6 +316,7 @@ impl Steam {
                             events.push(Event {
                                 peer: entry.peer,
                                 outcome,
+                                player_name: approved_name(outcome, entry.player_name),
                                 result_code: if callback.id != 201 && callback.size >= 12 {
                                     Some(std::ptr::read_unaligned(callback.data.add(8).cast::<i32>()))
                                 } else {
@@ -315,6 +339,7 @@ impl Steam {
                             events.push(Event {
                                 peer,
                                 outcome: "steam_auth_revoked",
+                                player_name: None,
                                 reason: "Steam authentication revoked.",
                                 result_code: None,
                             });
@@ -342,6 +367,7 @@ impl Steam {
                 events.push(Event {
                     peer: entry.peer,
                     outcome: "steam_auth_timeout",
+                    player_name: None,
                     reason: "Steam authentication timed out or backend disconnected.",
                     result_code: None,
                 });
@@ -382,6 +408,21 @@ impl Drop for Steam {
 #[cfg(test)]
 mod tests {
     use super::Callback;
+
+    #[test]
+    fn player_name_is_disclosed_only_on_approval() {
+        for outcome in [
+            "steam_auth_denied",
+            "steam_auth_timeout",
+            "steam_auth_revoked",
+        ] {
+            assert!(super::approved_name(outcome, Some("Player".to_owned())).is_none());
+        }
+        assert_eq!(
+            super::approved_name("steam_auth_approved", Some("Player".to_owned())).as_deref(),
+            Some("Player")
+        );
+    }
 
     #[test]
     fn linux_callback_abi_matches_inspected_sdk() {

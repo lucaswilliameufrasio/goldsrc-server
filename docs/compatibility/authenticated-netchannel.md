@@ -16,6 +16,15 @@ the session is removed, including timeout or Steam revocation. These are
 inputs for future serverinfo; slots are not yet sent to clients, and do not
 establish a connected player or world state.
 
+For future player updates, the validated connect envelope now retains only its
+bounded, printable public `name`, when present and valid UTF-8. The pending
+Steam request owns this value without copying the ticket or raw userinfo. It is
+passed to the matching channel only on a positive Steam approval and discarded
+on denial, timeout or revocation; names are not emitted into diagnostic logs.
+Invalid or unsupported names are omitted rather than substituting a name or
+changing the Steam approval decision. This is untrusted client-supplied data,
+not a Steam-verified identity, and it is not yet sent in sign-on.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves

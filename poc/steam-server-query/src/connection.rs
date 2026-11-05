@@ -16,6 +16,8 @@ pub struct Reply<'a> {
     pub ticket_length: Option<usize>,
     #[cfg_attr(not(feature = "steam-auth"), allow(dead_code))]
     pub ticket: Option<&'a [u8]>,
+    #[cfg_attr(not(feature = "steam-auth"), allow(dead_code))]
+    pub player_name: Option<&'a str>,
 }
 
 impl Reply<'_> {
@@ -29,6 +31,7 @@ impl Reply<'_> {
             protocol: None,
             ticket_length: None,
             ticket: None,
+            player_name: None,
         }
     }
 }
@@ -91,6 +94,7 @@ impl Connections {
                         protocol: None,
                         ticket_length: None,
                         ticket: None,
+                        player_name: None,
                     }));
                 }
                 // Positive signed range for GoldSrc's decimal integer parser.
@@ -108,6 +112,7 @@ impl Connections {
                 protocol: None,
                 ticket_length: None,
                 ticket: None,
+                player_name: None,
             }));
         }
 
@@ -133,6 +138,7 @@ impl Connections {
         reply.ticket_length = Some(parsed.ticket_length);
         if reply.outcome == "steam_auth_unavailable" {
             reply.ticket = Some(parsed.ticket);
+            reply.player_name = parsed.player_name;
         }
         Ok(Some(reply))
     }
@@ -142,12 +148,14 @@ pub fn is_challenge_request(packet: &[u8]) -> bool {
     packet == CHALLENGE_REQUEST || packet.strip_suffix(&[0]) == Some(CHALLENGE_REQUEST)
 }
 
-// Only safe numeric metadata leaves this parser. Never derive Debug for raw tickets/info.
+// Only the validated public name and numeric metadata leave this parser alongside
+// the borrowed ticket. Never derive Debug for raw tickets or userinfo.
 struct Connect<'a> {
     protocol: u32,
     challenge: u32,
     ticket_length: usize,
     ticket: &'a [u8],
+    player_name: Option<&'a str>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -205,6 +213,7 @@ fn parse_connect(packet: &[u8]) -> Result<Connect<'_>, ConnectError> {
     }
     let auth = validate_info(protinfo, true)?;
     validate_info(userinfo, false)?;
+    let player_name = public_player_name(userinfo);
     if auth != Some(b"3".as_slice()) {
         return Err(ConnectError::Auth);
     }
@@ -217,7 +226,24 @@ fn parse_connect(packet: &[u8]) -> Result<Connect<'_>, ConnectError> {
         challenge,
         ticket_length,
         ticket: &payload[end + 1..],
+        player_name,
     })
+}
+
+/// Preserve only a bounded, printable name; never retain passwords or raw userinfo.
+fn public_player_name(info: &[u8]) -> Option<&str> {
+    let mut fields = info.strip_prefix(b"\\")?.split(|byte| *byte == b'\\');
+    while let Some(key) = fields.next() {
+        let value = fields.next()?;
+        if key == b"name" {
+            let name = std::str::from_utf8(value).ok()?;
+            if name.is_empty() || name.len() > 31 || name.chars().any(char::is_control) {
+                return None;
+            }
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn take_word<'a>(line: &mut &'a [u8]) -> Result<&'a [u8], ConnectError> {
@@ -325,11 +351,13 @@ mod tests {
         let packet = connect(123);
         let wrong_peer = server.handle(&packet, peer(2001), now).unwrap().unwrap();
         assert_eq!(wrong_peer.outcome, "invalid_challenge");
+        assert!(wrong_peer.player_name.is_none());
         let valid = server.handle(&packet, peer(2000), now).unwrap().unwrap();
         assert_eq!(valid.outcome, "steam_auth_unavailable");
         assert_eq!(valid.protocol, Some(48));
         assert_eq!(valid.ticket_length, Some(19));
         assert_eq!(valid.ticket, Some(b"synthetic-ticket\0\xff\n".as_slice()));
+        assert_eq!(valid.player_name, Some("Test"));
         assert!(
             valid
                 .packet
@@ -344,6 +372,22 @@ mod tests {
                 .outcome,
             "invalid_challenge"
         );
+    }
+
+    #[test]
+    fn public_name_is_bounded_and_never_retains_other_info() {
+        assert_eq!(
+            public_player_name(b"\\password\\secret\\name\\Player\\_private\\value"),
+            Some("Player")
+        );
+        assert_eq!(public_player_name(b"\\password\\secret"), None);
+        assert_eq!(public_player_name(b"\\name\\"), None);
+        assert_eq!(
+            public_player_name(b"\\name\\12345678901234567890123456789012"),
+            None
+        );
+        assert_eq!(public_player_name(b"\\name\\\xff"), None);
+        assert_eq!(public_player_name(b"\\name\\a\xc2\x85b"), None);
     }
 
     #[test]
