@@ -31,6 +31,21 @@ file and prepares its CRC before opening the socket; errors abort startup. This
 does not load a playable world or send serverinfo. Without the option, startup
 behavior is unchanged. Maps remain operator-supplied and are not redistributed.
 
+The authenticated netchannel also has a preparation-only `prepare_serverinfo`
+path. It requires an existing session still awaiting `new`, uses that session's
+allocated slot regardless of the supplied template slot, and validates the
+remaining explicitly supplied fields. It returns bytes without sending them;
+there is no production caller yet. Tests use two approved synthetic sessions
+and the CRC of the local reference BSP to check the slot-specific CRC against
+the previously observed HLDS values. `sendres` is a subsequent client command,
+not part of the initial `new` response; resource transmission is not connected.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --all-features \
+  serverinfo_uses_crc_from_local_bsp_and_session_slot -- --ignored
+```
+
 ```sh
 cargo run --manifest-path poc/steam-server-query/Cargo.toml --example bsp_inventory -- \
   fixtures/local/reference-hlds/cstrike/maps/de_dust2.bsp --serverinfo-slot 0

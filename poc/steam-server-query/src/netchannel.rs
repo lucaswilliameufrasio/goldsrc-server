@@ -1,6 +1,7 @@
 //! Bounded first-sign-on diagnostic. Not a world/game simulation.
 use crate::fragments::{Ack, FragmentQueue};
 use crate::resources::{ManifestEntry, ResourceNegotiation};
+use crate::serverinfo::ServerInfo;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -368,6 +369,26 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    /// Prepare serverinfo for an approved session. Does not send a packet.
+    #[allow(dead_code)]
+    fn prepare_serverinfo(
+        &self,
+        peer: SocketAddr,
+        mut info: ServerInfo<'_>,
+    ) -> std::io::Result<Vec<u8>> {
+        let channel = self.channels.get(&peer).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "unknown approved session")
+        })?;
+        if !matches!(channel.phase, Phase::AwaitingNew) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "session is not awaiting new",
+            ));
+        }
+        info.player_index = channel.identity.slot;
+        info.encode()
+    }
+
     /// Prepared for a future sign-on producer; requires an already approved peer.
     #[allow(dead_code)]
     pub fn queue_resource_manifest(
@@ -498,6 +519,80 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn serverinfo_for_test(world_crc: u32, max_players: u8) -> ServerInfo<'static> {
+        ServerInfo {
+            spawn_count: 1,
+            world_crc,
+            client_dll_md5: [0; 16],
+            max_players,
+            player_index: 31,
+            game_type: 1,
+            game_dir: "cstrike",
+            hostname: "test",
+            world_model: "maps/test.bsp",
+            map_cycle: "",
+            secure: false,
+        }
+    }
+
+    #[test]
+    fn serverinfo_preparation_binds_slot_to_approved_session() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        assert!(
+            sessions
+                .prepare_serverinfo(peer(1), serverinfo_for_test(0x451b6da9, 2))
+                .is_err()
+        );
+        sessions.approve(peer(1), now).unwrap();
+        sessions.approve(peer(2), now).unwrap();
+        let first = sessions
+            .prepare_serverinfo(peer(1), serverinfo_for_test(0x451b6da9, 2))
+            .unwrap();
+        let second = sessions
+            .prepare_serverinfo(peer(2), serverinfo_for_test(0x451b6da9, 2))
+            .unwrap();
+        assert_eq!(&first[9..13], &0x562d43e0_u32.to_le_bytes());
+        assert_eq!(&second[9..13], &0x572d43e1_u32.to_le_bytes());
+        assert_eq!(first[30], 0);
+        assert_eq!(second[30], 1);
+        assert!(
+            sessions
+                .prepare_serverinfo(peer(2), serverinfo_for_test(0x451b6da9, 1))
+                .is_err()
+        );
+        sessions
+            .receive(peer(1), &packet(RELIABLE | 1, 0, b"\x03new\0"), now)
+            .unwrap();
+        assert!(
+            sessions
+                .prepare_serverinfo(peer(1), serverinfo_for_test(0x451b6da9, 2))
+                .is_err()
+        );
+        sessions.revoke(peer(2), now).unwrap();
+        assert!(
+            sessions
+                .prepare_serverinfo(peer(2), serverinfo_for_test(0x451b6da9, 2))
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS BSP reference"]
+    fn serverinfo_uses_crc_from_local_bsp_and_session_slot() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let path = std::path::Path::new(&root).join("reference-hlds/cstrike/maps/de_dust2.bsp");
+        let (_, crc) = steam_server_query_poc::map::inspect(&path).unwrap();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), Instant::now()).unwrap();
+        let encoded = sessions
+            .prepare_serverinfo(peer(1), serverinfo_for_test(crc, 2))
+            .unwrap();
+        assert_eq!(&encoded[9..13], &0x562d43e0_u32.to_le_bytes());
+        assert_eq!(encoded[30], 0);
+    }
 
     #[test]
     fn approved_session_slots_are_unique_and_released_on_cleanup() {

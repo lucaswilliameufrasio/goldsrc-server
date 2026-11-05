@@ -11,7 +11,7 @@ mod netchannel;
 #[cfg(any(test, feature = "steam-auth"))]
 #[allow(dead_code)]
 mod resources;
-#[cfg(test)]
+#[cfg(any(test, feature = "steam-auth"))]
 mod serverinfo;
 #[cfg(test)]
 mod signon;
