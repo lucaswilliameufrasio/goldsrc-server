@@ -10,6 +10,12 @@ the Rust executable's version; the secure flag stays false (no VAC claim).
 Only the positive, matching, unexpired Steam callback can create this session.
 Rejected/pending tickets and unknown endpoints never get channel responses.
 
+Each approved channel retains a distinct zero-based slot and its assigned user
+ID. Slots remain reserved while the channel is closing and are released when
+the session is removed, including timeout or Steam revocation. These are
+inputs for future serverinfo; slots are not yet sent to clients, and do not
+establish a connected player or world state.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
