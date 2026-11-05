@@ -2,7 +2,7 @@
 use crate::fragments::{Ack, FragmentQueue};
 use crate::resources::{ManifestEntry, ResourceNegotiation};
 use crate::serverinfo::ServerInfo;
-use crate::signon::NewResponse;
+use crate::signon::{ClientUpdate, NewResponse};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -137,9 +137,29 @@ struct SessionIdentity {
     slot: u8,
 }
 
+/// A public player update prepared from an approved channel, never from a ticket.
+#[allow(dead_code)]
+struct PreparedPlayer {
+    slot: u8,
+    userid: u32,
+    userinfo: String,
+    digest: [u8; 16],
+}
+
+#[allow(dead_code)]
+impl PreparedPlayer {
+    fn as_update(&self) -> ClientUpdate<'_> {
+        ClientUpdate {
+            slot: self.slot,
+            userid: self.userid,
+            userinfo: &self.userinfo,
+            digest: self.digest,
+        }
+    }
+}
+
 struct Channel {
     identity: SessionIdentity,
-    #[allow(dead_code)]
     player_name: Option<String>,
     acceptance: Vec<u8>,
     accepted: Instant,
@@ -476,6 +496,42 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    /// Requires a protocol digest from the caller; never derives or invents one.
+    #[allow(dead_code)]
+    fn prepare_player_update(
+        &self,
+        peer: SocketAddr,
+        digest: [u8; 16],
+    ) -> std::io::Result<PreparedPlayer> {
+        let channel = self.channels.get(&peer).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "unknown approved session")
+        })?;
+        if !matches!(channel.phase, Phase::AwaitingNew) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "session is not awaiting new",
+            ));
+        }
+        let name = channel.player_name.as_deref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "player name unavailable")
+        })?;
+        if name.is_empty()
+            || name.len() > 31
+            || name.chars().any(char::is_control)
+            || name.bytes().any(|byte| matches!(byte, b'\\' | b'"' | b';'))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid public player name",
+            ));
+        }
+        Ok(PreparedPlayer {
+            slot: channel.identity.slot,
+            userid: channel.identity.userid,
+            userinfo: format!("\\name\\{name}"),
+            digest,
+        })
+    }
     /// Prepare an explicitly supplied world snapshot for one approved session.
     /// No runtime producer calls this yet; this does not authenticate the peer.
     #[allow(dead_code)]
@@ -667,6 +723,53 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_player_update_is_bound_to_session_and_signon() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        assert!(sessions.prepare_player_update(peer(1), [0x42; 16]).is_err());
+        sessions
+            .approve_with_name(peer(1), Some("Player".to_owned()), now)
+            .unwrap();
+        sessions
+            .approve_with_name(peer(2), Some("Other".to_owned()), now)
+            .unwrap();
+        let player = sessions.prepare_player_update(peer(2), [0x42; 16]).unwrap();
+        assert_eq!((player.slot, player.userid), (1, 2));
+        assert_eq!(player.userinfo, "\\name\\Other");
+        let clients = [player.as_update()];
+        let mut response = response_for_sequence();
+        response.serverinfo.info.player_index = 1;
+        response.clients = &clients;
+        let expected = response.encode().unwrap();
+        assert!(
+            expected
+                .windows(b"\\name\\Other\0".len())
+                .any(|bytes| bytes == b"\\name\\Other\0")
+        );
+        sessions
+            .prepare_signon(peer(2), response, &resource_for_sequence())
+            .unwrap();
+        assert!(sessions.prepare_player_update(peer(2), [0x42; 16]).is_err());
+        let sent = sessions
+            .receive(peer(2), &packet(1, 0, b"\x03new\0"), now)
+            .unwrap()
+            .packet
+            .unwrap();
+        let mut body = sent[8..].to_vec();
+        munge(&mut body, 1, false);
+        let size = usize::from(u16::from_le_bytes(body[7..9].try_into().unwrap()));
+        assert_eq!(&body[10..10 + size], expected);
+        sessions.revoke(peer(2), now).unwrap();
+        assert!(sessions.prepare_player_update(peer(2), [0x42; 16]).is_err());
+        sessions.approve_with_name(peer(3), None, now).unwrap();
+        assert!(sessions.prepare_player_update(peer(3), [0x42; 16]).is_err());
+        sessions
+            .approve_with_name(peer(4), Some("bad\\key".to_owned()), now)
+            .unwrap();
+        assert!(sessions.prepare_player_update(peer(4), [0x42; 16]).is_err());
+    }
 
     #[test]
     fn approved_player_name_is_session_scoped_and_removed_on_revoke() {

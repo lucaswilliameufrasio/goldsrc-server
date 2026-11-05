@@ -25,6 +25,13 @@ Invalid or unsupported names are omitted rather than substituting a name or
 changing the Steam approval decision. This is untrusted client-supplied data,
 not a Steam-verified identity, and it is not yet sent in sign-on.
 
+The channel can prepare an individual public player update from its own slot,
+user ID and retained name, with the protocol digest supplied explicitly by the
+caller. Missing or unsafe names, unknown peers and sessions no longer awaiting
+`new` are rejected. A synthetic-session test inserts that update in a prepared
+sign-on and checks the transmitted fragment. No runtime producer invokes this
+path yet; it neither manufactures the digest nor implements an active world.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
