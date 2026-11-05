@@ -2,6 +2,7 @@
 use crate::fragments::{Ack, FragmentQueue};
 use crate::resources::{ManifestEntry, ResourceNegotiation};
 use crate::serverinfo::ServerInfo;
+use crate::signon::NewResponse;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -44,6 +45,7 @@ fn munge(data: &mut [u8], key: u8, encode: bool) {
 enum Command {
     Nop,
     New,
+    Sendres,
     Disconnect,
 }
 
@@ -62,9 +64,10 @@ fn command(payload: &[u8]) -> Result<Command, ()> {
                     return Err(());
                 }
                 match rest[..end].trim_ascii() {
-                    b"new" if result != Command::Disconnect => result = Command::New,
+                    b"new" if result == Command::Nop => result = Command::New,
                     b"dropclient" | b"disconnect" => result = Command::Disconnect,
-                    b"new" => {}
+                    b"new" if result == Command::Disconnect => {}
+                    b"sendres" if result == Command::Nop => result = Command::Sendres,
                     _ => return Err(()),
                 }
                 cursor += end + 1;
@@ -77,10 +80,21 @@ fn command(payload: &[u8]) -> Result<Command, ()> {
 
 enum Phase {
     AwaitingNew,
+    Prepared {
+        new_message: Vec<u8>,
+        resources: ResourceNegotiation,
+        manifest: Vec<u8>,
+    },
     Fragments {
         started: Instant,
         queue: FragmentQueue,
         send_pending: bool,
+        next: FragmentNext,
+    },
+    AwaitingSendres {
+        started: Instant,
+        resources: ResourceNegotiation,
+        manifest: Vec<u8>,
     },
     AwaitingConsistency {
         started: Instant,
@@ -90,6 +104,14 @@ enum Phase {
         payload: Vec<u8>,
         last_reliable: Option<u32>,
         reliable_bit: bool,
+    },
+}
+
+enum FragmentNext {
+    Close,
+    Signon {
+        resources: ResourceNegotiation,
+        manifest: Vec<u8>,
     },
 }
 
@@ -266,6 +288,7 @@ impl Channel {
         if let Phase::Fragments {
             queue,
             send_pending,
+            next,
             ..
         } = &mut self.phase
         {
@@ -274,7 +297,18 @@ impl Channel {
                 Ack::Resend | Ack::Advanced => *send_pending = true,
                 Ack::Complete => {
                     self.outgoing_reliable = queue.reliable_bit();
-                    if self
+                    let next = std::mem::replace(next, FragmentNext::Close);
+                    if let FragmentNext::Signon {
+                        resources,
+                        manifest,
+                    } = next
+                    {
+                        self.phase = Phase::AwaitingSendres {
+                            started: now,
+                            resources,
+                            manifest,
+                        };
+                    } else if self
                         .resources
                         .as_ref()
                         .is_some_and(ResourceNegotiation::expects_consistency)
@@ -314,8 +348,66 @@ impl Channel {
         match command(&payload) {
             Ok(Command::Disconnect) => Update::status("netchan_client_disconnect", true),
             Ok(Command::New) => {
+                if matches!(self.phase, Phase::Prepared { .. }) {
+                    let phase = std::mem::replace(&mut self.phase, Phase::AwaitingNew);
+                    if let Phase::Prepared {
+                        new_message,
+                        resources,
+                        manifest,
+                    } = phase
+                    {
+                        match FragmentQueue::new(new_message, 1024, self.outgoing_reliable) {
+                            Ok(queue) => {
+                                self.phase = Phase::Fragments {
+                                    started: now,
+                                    queue,
+                                    send_pending: true,
+                                    next: FragmentNext::Signon {
+                                        resources,
+                                        manifest,
+                                    },
+                                };
+                                return self.transmit(now, "netchan_signon_start");
+                            }
+                            Err(_) => {
+                                self.start_close(now, SIGNON_UNAVAILABLE);
+                                return self.transmit(now, "netchan_signon_invalid");
+                            }
+                        }
+                    }
+                }
                 self.start_close(now, SIGNON_UNAVAILABLE);
                 self.transmit(now, "netchan_new")
+            }
+            Ok(Command::Sendres) => {
+                if matches!(self.phase, Phase::AwaitingSendres { .. }) {
+                    let phase = std::mem::replace(&mut self.phase, Phase::AwaitingNew);
+                    if let Phase::AwaitingSendres {
+                        resources,
+                        manifest,
+                        ..
+                    } = phase
+                    {
+                        match FragmentQueue::new(manifest, 1024, self.outgoing_reliable) {
+                            Ok(queue) => {
+                                self.resources = Some(resources);
+                                self.phase = Phase::Fragments {
+                                    started: now,
+                                    queue,
+                                    send_pending: true,
+                                    next: FragmentNext::Close,
+                                };
+                                return self.transmit(now, "netchan_resource_start");
+                            }
+                            Err(_) => {
+                                self.start_close(now, SIGNON_UNAVAILABLE);
+                                return self.transmit(now, "netchan_resource_invalid");
+                            }
+                        }
+                    }
+                }
+                self.start_close(now, b"Unexpected resource request.");
+                self.transmit(now, "netchan_sendres_unexpected")
             }
             Ok(Command::Nop) => self.transmit(now, "netchan_ack"),
             Err(()) => {
@@ -330,7 +422,9 @@ impl Channel {
 
     fn tick(&mut self, now: Instant) -> Option<Update> {
         match self.phase {
-            Phase::AwaitingNew if now.saturating_duration_since(self.accepted) >= WAIT_NEW => {
+            Phase::AwaitingNew | Phase::Prepared { .. }
+                if now.saturating_duration_since(self.accepted) >= WAIT_NEW =>
+            {
                 Some(Update::status("netchan_timeout", true))
             }
             Phase::Closing { started, .. }
@@ -347,6 +441,11 @@ impl Channel {
                 if now.saturating_duration_since(started) >= WAIT_NEW =>
             {
                 Some(Update::status("netchan_consistency_timeout", true))
+            }
+            Phase::AwaitingSendres { started, .. }
+                if now.saturating_duration_since(started) >= WAIT_NEW =>
+            {
+                Some(Update::status("netchan_sendres_timeout", true))
             }
             Phase::Fragments { .. }
                 if now.saturating_duration_since(self.last_send) >= PROBE_INTERVAL =>
@@ -369,6 +468,35 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    /// Prepare an explicitly supplied world snapshot for one approved session.
+    /// No runtime producer calls this yet; this does not authenticate the peer.
+    #[allow(dead_code)]
+    fn prepare_signon(
+        &mut self,
+        peer: SocketAddr,
+        mut response: NewResponse<'_>,
+        entries: &[ManifestEntry<'_>],
+    ) -> Result<(), &'static str> {
+        let channel = self.channels.get_mut(&peer).ok_or("netchan_unknown_peer")?;
+        if !matches!(channel.phase, Phase::AwaitingNew) {
+            return Err("netchan_busy");
+        }
+        response.serverinfo.info.player_index = channel.identity.slot;
+        let (resources, manifest) =
+            ResourceNegotiation::prepare(response.serverinfo.info.spawn_count, entries)
+                .map_err(|_| "netchan_invalid_manifest")?;
+        let new_message = response.encode().map_err(|_| "netchan_invalid_signon")?;
+        FragmentQueue::new(new_message.clone(), 1024, channel.outgoing_reliable)
+            .map_err(|_| "netchan_invalid_signon")?;
+        FragmentQueue::new(manifest.clone(), 1024, channel.outgoing_reliable)
+            .map_err(|_| "netchan_invalid_manifest")?;
+        channel.phase = Phase::Prepared {
+            new_message,
+            resources,
+            manifest,
+        };
+        Ok(())
+    }
     /// Prepare serverinfo for an approved session. Does not send a packet.
     #[allow(dead_code)]
     fn prepare_serverinfo(
@@ -411,6 +539,7 @@ impl Sessions {
             started: now,
             queue,
             send_pending: true,
+            next: FragmentNext::Close,
         };
         channel
             .transmit(now, "netchan_resource_start")
@@ -467,6 +596,7 @@ impl Sessions {
             started: now,
             queue,
             send_pending: true,
+            next: FragmentNext::Close,
         };
         channel
             .transmit(now, "netchan_fragment_start")
@@ -476,7 +606,7 @@ impl Sessions {
 
     pub fn retry_acceptance(&mut self, peer: SocketAddr, now: Instant) -> Option<Vec<u8>> {
         let channel = self.channels.get_mut(&peer)?;
-        if matches!(channel.phase, Phase::AwaitingNew)
+        if matches!(channel.phase, Phase::AwaitingNew | Phase::Prepared { .. })
             && now.saturating_duration_since(channel.last_send) >= PROBE_INTERVAL
         {
             channel.last_send = now;
@@ -519,6 +649,120 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn response_for_sequence() -> NewResponse<'static> {
+        NewResponse {
+            serverinfo: crate::signon::tests::synthetic(&[14]),
+            user_messages: &[],
+            full_server_info: "\\hostname\\test",
+            allow_shaders: false,
+            allow_autoaim: false,
+            clients: &[],
+        }
+    }
+
+    fn resource_for_sequence() -> [ManifestEntry<'static>; 1] {
+        [ManifestEntry {
+            resource: crate::resources::Resource {
+                kind: 0,
+                filename: "test.wav",
+                index: 1,
+                download_size: 1,
+                flags: 0,
+                reserved: [0; 32],
+            },
+            consistency_hash: Some(0x12345678_u32.to_le_bytes()),
+        }]
+    }
+
+    #[test]
+    fn prepared_new_then_sendres_then_consistency() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        assert!(
+            sessions
+                .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+                .is_err()
+        );
+        sessions.approve(peer(1), now).unwrap();
+        sessions
+            .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+            .unwrap();
+        let first = sessions
+            .receive(peer(1), &packet(1, 0, b"\x03new\0"), now)
+            .unwrap();
+        assert_eq!(first.outcome, "netchan_signon_start");
+        let first = first.packet.unwrap();
+        assert_eq!(
+            u32::from_le_bytes(first[..4].try_into().unwrap()),
+            RELIABLE | FRAGMENT | 1
+        );
+        let mut body = first[8..].to_vec();
+        munge(&mut body, 1, false);
+        let size = usize::from(u16::from_le_bytes(body[7..9].try_into().unwrap()));
+        assert_eq!(
+            &body[10..10 + size],
+            response_for_sequence().encode().unwrap()
+        );
+        let next = sessions
+            .receive(peer(1), &packet(2, RELIABLE | 1, b"\x03sendres\0"), now)
+            .unwrap();
+        assert_eq!(next.outcome, "netchan_resource_start");
+        let next = next.packet.unwrap();
+        assert_eq!(
+            u32::from_le_bytes(next[..4].try_into().unwrap()),
+            RELIABLE | FRAGMENT | 2
+        );
+        let result = sessions
+            .receive(
+                peer(1),
+                &packet(3, 2, &[7, 6, 0, 0x8b, 0xd7, 0x50, 0, 0x46, 2]),
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            result.outcome,
+            "netchan_consistency_valid_resources_unavailable"
+        );
+        assert!(!result.finished);
+    }
+
+    #[test]
+    fn prepared_sequence_rejects_early_sendres_and_invalid_plan() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), now).unwrap();
+        let mut invalid = response_for_sequence();
+        invalid.serverinfo.info.max_players = 0;
+        assert!(
+            sessions
+                .prepare_signon(peer(1), invalid, &resource_for_sequence())
+                .is_err()
+        );
+        sessions
+            .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+            .unwrap();
+        let result = sessions
+            .receive(peer(1), &packet(1, 0, b"\x03sendres\0"), now)
+            .unwrap();
+        assert_eq!(result.outcome, "netchan_sendres_unexpected");
+        assert!(
+            sessions
+                .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+                .is_err()
+        );
+        sessions.approve(peer(2), now).unwrap();
+        sessions
+            .prepare_signon(peer(2), response_for_sequence(), &resource_for_sequence())
+            .unwrap();
+        sessions
+            .receive(peer(2), &packet(1, 0, b"\x03new\0"), now)
+            .unwrap();
+        let result = sessions
+            .receive(peer(2), &packet(2, 0, b"\x03sendres\0"), now)
+            .unwrap();
+        assert_eq!(result.outcome, "netchan_sendres_unexpected");
+    }
 
     fn serverinfo_for_test(world_crc: u32, max_players: u8) -> ServerInfo<'static> {
         ServerInfo {

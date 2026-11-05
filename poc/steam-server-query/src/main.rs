@@ -13,7 +13,7 @@ mod netchannel;
 mod resources;
 #[cfg(any(test, feature = "steam-auth"))]
 mod serverinfo;
-#[cfg(test)]
+#[cfg(any(test, feature = "steam-auth"))]
 mod signon;
 #[cfg(feature = "steam-auth")]
 mod steam;

@@ -1,4 +1,4 @@
-//! Experimental sign-on message preparation. Compiled only in tests.
+//! Experimental sign-on message preparation; not enabled in the live flow.
 use crate::serverinfo::ServerInfo;
 use std::io::{self, Error, ErrorKind};
 

@@ -150,11 +150,19 @@ sign-on. Existing Steam authentication and cleanup behavior are unchanged.
 
 ## Prepared serverinfo message
 
-`src/signon.rs` is compiled only in tests. It assembles the HLDS
+`src/signon.rs` is compiled with Steam authentication and in tests. It assembles the HLDS
 `SV_SendServerinfo` message: optional print banner, serverinfo, extra info,
 delta descriptions, movevars, CD track and view entity. It accepts explicit
 session data and movevars; it does not infer live settings, validate a delta
 byte stream or transmit anything. Resource exchange is absent.
+
+The channel has a preparation-only per-session plan that binds `new` to the
+approved slot and queues its response as fragments. After the final ACK it waits
+for `sendres`, including when that command shares the ACK packet; only then it
+queues the corresponding prevalidated manifest. Early `sendres` fails closed.
+Tests exercise the sequence using synthetic data. No live world producer installs
+such a plan yet, so the normal `new` still disconnects. This does not implement
+resource downloads, callback decisions, complete sign-on or gameplay.
 
 The test-only `NewResponse` appends user-message registrations, the
 `fullserverinfo` command and explicitly supplied client updates. Its userinfo
