@@ -77,6 +77,18 @@ was not connected or active; reinitializing its netchannel is not equivalent
 to executing the complete `SV_ConnectClient` slot-selection and reuse path.
 No conclusion about that path or real client credentials follows from the test.
 
+`examples/hlds_connect_reuse_synthetic.gdb` additionally invokes the actual
+HLDS 10211 `SV_ConnectClient` with a synthetic protocol-2 LAN proxy command,
+after normal drop on an initialized but previously inactive slot. The same
+loopback address takes the reconnect branch and selects slot 0. At a breakpoint
+before `Steam_GSBSecure`, the slot's connected flag was set and the 64-byte
+field contained the new synthetic 32-byte value, a NUL at offset 32, and the
+previous synthetic bytes at offsets 33..63. Execution deliberately stops at
+that boundary: there is no completed connection, Steam approval, Steam client,
+or real credential. The result does not cover selection of a different-address
+empty slot or prove the state of any real Steam connection. A protocol-3 trial
+without a real ticket was rejected; no authentication check was bypassed.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
