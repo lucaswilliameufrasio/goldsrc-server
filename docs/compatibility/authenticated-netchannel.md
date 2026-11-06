@@ -69,6 +69,14 @@ because its network buffer was not initialized; it provides no cleanup result.
 Neither observation establishes the bytes for a real Steam client or all
 cleanup paths. The runtime must continue to require explicit digest input.
 
+`examples/hlds_slot_reuse_synthetic.gdb` extends this probe: it initializes
+the slot's netchannel using `Netchan_Setup`, then performs a direct normal
+(`crash = 0`) `SV_DropClient` and initializes the same netchannel again. Both
+calls preserved the synthetic 64-byte pattern on HLDS build 10211. This slot
+was not connected or active; reinitializing its netchannel is not equivalent
+to executing the complete `SV_ConnectClient` slot-selection and reuse path.
+No conclusion about that path or real client credentials follows from the test.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
