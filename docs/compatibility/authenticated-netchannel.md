@@ -59,6 +59,16 @@ does not implement these HLDS-specific field checks. Do not infer the remaining
 bytes, use an all-zero default, or treat the digest as Steam authentication.
 No real credential value was examined during this investigation.
 
+An isolated synthetic probe, `examples/hlds_slot_cleanup_synthetic.gdb`,
+observed all 64 bytes zero in slot 0 at the `SV_ActivateServer` breakpoint.
+After replacing them with a synthetic pattern, a direct `SV_DropClient` call
+with its crash argument set to 1 left all 64 bytes unchanged. This slot was
+not connected, and this is not an end-to-end slot reuse or normal-disconnect
+test. A direct non-crash drop on the uninitialized slot failed inside HLDS
+because its network buffer was not initialized; it provides no cleanup result.
+Neither observation establishes the bytes for a real Steam client or all
+cleanup paths. The runtime must continue to require explicit digest input.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
