@@ -179,6 +179,31 @@ it to the public internet.
   negotiation remain unimplemented.
   See [sign-on fragments](../compatibility/signon-fragments.md).
 
+### Progress (2026-11-06)
+
+- **Verified against local Valve HLDS 10211:** the native BSP point trace now
+  compares final positions and impact planes in addition to fractions and
+  solid/open/water flags. The opt-in reference test covers 24 traces across the
+  four world-model hulls; 10 impacts check position (and plane distance) within
+  0.001 map units and plane normals within `1e-5`. This expands static collision
+  evidence only; it is not player movement or a running world. See
+  [serverinfo and BSP collision evidence](../compatibility/serverinfo.md) and
+  the local capture recipe in
+  [`hlds_hull_trace.gdb`](../../poc/steam-server-query/examples/hlds_hull_trace.gdb).
+- **Still intentionally disabled:** no active world producer installs a
+  serverinfo/resource plan after Steam approval. The server continues to
+  disconnect after the client's initial `new`; completed sign-on, downloads and
+  gameplay have not been demonstrated with the official client.
+- **Checks passed on this revision:** `cargo fmt --manifest-path
+  poc/steam-server-query/Cargo.toml -- --check`, `cargo build --manifest-path
+  poc/steam-server-query/Cargo.toml`, `cargo clippy --manifest-path
+  poc/steam-server-query/Cargo.toml --all-targets --all-features -- -D warnings`,
+  and `cargo test --manifest-path poc/steam-server-query/Cargo.toml --all-targets`
+  with and without `--all-features`. The opt-in
+  `impact_positions_and_planes_match_hlds` reference test also passed against
+  the local HLDS map. Other fixture-dependent HLDS tests remain ignored unless
+  their specific local captures are supplied.
+
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
 is confirmed by the locally acquired HLDS executable (App BuildID `15961496`,
@@ -187,7 +212,8 @@ did not stay healthy enough in this container to capture a query response, and
 no client/HLDS packet fixture exists yet. The opt-in Steam adapter has now
 received positive approval and verified the initial acceptance/netchannel
 boundary with the official client. Next: implement serverinfo, resource
-negotiation and the rest of sign-on.
+negotiation and the rest of sign-on, without enabling any partial plan before
+its inputs and official-client behavior are verified.
 Applicable permissions remain the owner's responsibility. Client build
 identification and reference fixtures remain open evidence
 gaps; do not treat local synthetic tests as those fixtures.
@@ -204,6 +230,23 @@ gaps; do not treat local synthetic tests as those fixtures.
   currently used plugins.
 - Confirm permissions for every map and asset before adding it to a distributable
   image or FastDL bundle.
+- Implement a native world/session producer that binds validated map state and
+  verified sign-on inputs to the currently approved Steam session; keep admission
+  fail-closed until this is ready.
+- Complete and verify the official-client sign-on path: `svc_serverinfo`,
+  delta/movevars/extra-info messages, resource negotiation and downloads,
+  reliable fragmentation, and the remaining client callbacks. The current
+  serverinfo and resource paths are preparation-only and are not sent live.
+- Build a playable native slice: instantiate map entities, select/spawn players,
+  implement player movement and appropriate hull/entity collision, then add the
+  chosen mode's weapons, rounds and game rules. Current BSP traces are static
+  point sweeps only.
+- Implement native operations replacing required plugins (administration,
+  health/metrics, bans, ranking/history and persistence) and verify failure and
+  restart behavior.
+- Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
+  protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
+  and measured load tests on ARM64 hardware.
 
 ## References
 

@@ -318,6 +318,114 @@ mod tests {
 
     #[test]
     #[ignore = "requires local HLDS map"]
+    fn impact_positions_and_planes_match_hlds() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let path = std::path::Path::new(&root).join("reference-hlds/cstrike/maps/de_dust2.bsp");
+        let geometry = crate::map::load_geometry(&path).unwrap();
+        let a = [-500.0, 1000.0, 0.0];
+        let b = [0.0; 3];
+        let c = [100.0, 100.0, 100.0];
+        let segments = [(a, b), (b, a), (a, a), (b, b), (c, a), (a, c)];
+        // Captured independently from hlds_hull_trace.gdb, HLDS 10211.
+        let hits = [
+            (0, 0, [-144.015_63, 288.03125, 0.0], [0.0, 1.0, 0.0], 288.0),
+            (
+                0,
+                1,
+                [-383.984_38, 767.96875, 0.0],
+                [0.0, -1.0, 0.0],
+                -768.0,
+            ),
+            (
+                0,
+                4,
+                [16.031252, 225.953_13, 86.00521],
+                [1.0, 0.0, 0.0],
+                16.0,
+            ),
+            (
+                0,
+                5,
+                [-25.354162, 288.03125, 79.10764],
+                [0.0, 1.0, 0.0],
+                288.0,
+            ),
+            (
+                1,
+                0,
+                [-455.85498, 911.70996, 0.0],
+                [0.0, 0.24253562, 0.9701425],
+                221.0909,
+            ),
+            (
+                1,
+                5,
+                [-394.05197, 841.078, 17.658],
+                [0.0, 0.24253562, 0.9701425],
+                221.0909,
+            ),
+            (
+                2,
+                0,
+                [-450.03412, 900.06824, 0.0],
+                [0.0, 0.24253562, 0.9701425],
+                218.26736,
+            ),
+            (
+                2,
+                5,
+                [-380.0819, 820.12286, 19.986347],
+                [0.0, 0.24253562, 0.9701425],
+                218.26736,
+            ),
+            (
+                3,
+                0,
+                [-420.92987, 841.85974, 0.0],
+                [0.0, 0.24253562, 0.9701425],
+                204.14972,
+            ),
+            (
+                3,
+                5,
+                [-36.020836, 304.03125, 77.329865],
+                [0.0, 1.0, 0.0],
+                304.0,
+            ),
+        ];
+        for hull in 0..4 {
+            for (index, (start, end)) in segments.iter().enumerate() {
+                let trace = trace_point(&geometry, 0, hull, *start, *end).unwrap();
+                let expected = hits
+                    .iter()
+                    .find(|(h, i, _, _, _)| *h == hull && *i == index);
+                if let Some((_, _, position, normal, distance)) = expected {
+                    let (actual_normal, actual_distance) = trace.plane.expect("HLDS impact plane");
+                    for axis in 0..3 {
+                        assert!(
+                            (trace.end[axis] - position[axis]).abs() < 0.001,
+                            "hull {hull}, segment {index}, position {axis}: {trace:?}"
+                        );
+                        assert!(
+                            (actual_normal[axis] - normal[axis]).abs() < 0.00001,
+                            "hull {hull}, segment {index}, normal {axis}: {trace:?}"
+                        );
+                    }
+                    assert!(
+                        (actual_distance - distance).abs() < 0.001,
+                        "hull {hull}, segment {index}: {trace:?}"
+                    );
+                } else {
+                    assert_eq!(trace.end, *end, "hull {hull}, segment {index}");
+                    assert_eq!(trace.plane, None, "hull {hull}, segment {index}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS map"]
     fn world_hull_traces_match_hlds() {
         let root =
             std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");

@@ -74,8 +74,12 @@ water flags. It limits recursion to 128 levels and total work to one million
 steps; exceeding either returns an error rather than a collision result. The
 opt-in `world_hull_traces_match_hlds` compares fraction (tolerance 1e-5) and
 flags for four synthetic segments across all four world-model hulls against
-`examples/hlds_hull_trace.gdb` on local HLDS 10211. Plane and end position are
-tested synthetically but not independently compared to HLDS in these 16 cases.
+`examples/hlds_hull_trace.gdb` on local HLDS 10211. A second opt-in test,
+`impact_positions_and_planes_match_hlds`, compares final position for 24 cases
+and normal and plane distance for the 10 impacts, including starts in solid,
+both directions and inclined planes. Tolerances are 0.001 map units for position
+and distance and 1e-5 for normals; no-impact cases require the unchanged end
+point and no plane. This is limited reference evidence, not exhaustive parity.
 This does not implement moving entities, automatic hull selection, box sweeps,
 rotation, player movement or a running world.
 
@@ -83,6 +87,9 @@ rotation, player movement or a running world.
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --lib \
   world_hull_traces_match_hlds -- --ignored
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --lib \
+  impact_positions_and_planes_match_hlds -- --ignored
 ```
 
 ```sh
