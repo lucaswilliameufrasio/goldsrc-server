@@ -501,11 +501,18 @@ impl Sessions {
     fn prepare_player_update(
         &self,
         peer: SocketAddr,
+        expected_userid: u32,
         digest: [u8; 16],
     ) -> std::io::Result<PreparedPlayer> {
         let channel = self.channels.get(&peer).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "unknown approved session")
         })?;
+        if channel.identity.userid != expected_userid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "stale approved session",
+            ));
+        }
         if !matches!(channel.phase, Phase::AwaitingNew) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -729,6 +736,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stale_player_digest_cannot_be_attached_to_replacement_session() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions
+            .approve_with_name(peer(1), Some("First".to_owned()), now)
+            .unwrap();
+        let first_id = sessions.channels[&peer(1)].identity.userid;
+        sessions.revoke(peer(1), now).unwrap();
+        sessions
+            .approve_with_name(peer(1), Some("Second".to_owned()), now)
+            .unwrap();
+        let second_id = sessions.channels[&peer(1)].identity.userid;
+        let error = match sessions.prepare_player_update(peer(1), first_id, [0x42; 16]) {
+            Ok(_) => panic!("stale digest must not be associated with a replacement session"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "stale approved session");
+        let player = sessions
+            .prepare_player_update(peer(1), second_id, [0x24; 16])
+            .unwrap();
+        assert_eq!(player.userid, second_id);
+        assert_eq!(player.userinfo, "\\name\\Second");
+        assert_eq!(player.digest, [0x24; 16]);
+    }
+
+    #[test]
     fn stale_signon_plan_cannot_cross_session_replacement() {
         let now = Instant::now();
         let mut sessions = Sessions::new();
@@ -775,14 +808,20 @@ mod tests {
     fn approved_player_update_is_bound_to_session_and_signon() {
         let now = Instant::now();
         let mut sessions = Sessions::new();
-        assert!(sessions.prepare_player_update(peer(1), [0x42; 16]).is_err());
+        assert!(
+            sessions
+                .prepare_player_update(peer(1), 1, [0x42; 16])
+                .is_err()
+        );
         sessions
             .approve_with_name(peer(1), Some("Player".to_owned()), now)
             .unwrap();
         sessions
             .approve_with_name(peer(2), Some("Other".to_owned()), now)
             .unwrap();
-        let player = sessions.prepare_player_update(peer(2), [0x42; 16]).unwrap();
+        let player = sessions
+            .prepare_player_update(peer(2), 2, [0x42; 16])
+            .unwrap();
         assert_eq!((player.slot, player.userid), (1, 2));
         assert_eq!(player.userinfo, "\\name\\Other");
         let clients = [player.as_update()];
@@ -798,7 +837,11 @@ mod tests {
         sessions
             .prepare_signon(peer(2), 2, response, &resource_for_sequence())
             .unwrap();
-        assert!(sessions.prepare_player_update(peer(2), [0x42; 16]).is_err());
+        assert!(
+            sessions
+                .prepare_player_update(peer(2), 2, [0x42; 16])
+                .is_err()
+        );
         let sent = sessions
             .receive(peer(2), &packet(1, 0, b"\x03new\0"), now)
             .unwrap()
@@ -809,13 +852,25 @@ mod tests {
         let size = usize::from(u16::from_le_bytes(body[7..9].try_into().unwrap()));
         assert_eq!(&body[10..10 + size], expected);
         sessions.revoke(peer(2), now).unwrap();
-        assert!(sessions.prepare_player_update(peer(2), [0x42; 16]).is_err());
+        assert!(
+            sessions
+                .prepare_player_update(peer(2), 2, [0x42; 16])
+                .is_err()
+        );
         sessions.approve_with_name(peer(3), None, now).unwrap();
-        assert!(sessions.prepare_player_update(peer(3), [0x42; 16]).is_err());
+        assert!(
+            sessions
+                .prepare_player_update(peer(3), 3, [0x42; 16])
+                .is_err()
+        );
         sessions
             .approve_with_name(peer(4), Some("bad\\key".to_owned()), now)
             .unwrap();
-        assert!(sessions.prepare_player_update(peer(4), [0x42; 16]).is_err());
+        assert!(
+            sessions
+                .prepare_player_update(peer(4), 4, [0x42; 16])
+                .is_err()
+        );
     }
 
     #[test]

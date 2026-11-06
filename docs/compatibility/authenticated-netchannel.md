@@ -31,6 +31,9 @@ caller. Missing or unsafe names, unknown peers and sessions no longer awaiting
 `new` are rejected. A synthetic-session test inserts that update in a prepared
 sign-on and checks the transmitted fragment. No runtime producer invokes this
 path yet; it neither manufactures the digest nor implements an active world.
+Preparing this update also requires the expected session user ID, so a delayed
+digest from a revoked session cannot be attached to a replacement at the same
+endpoint. This check does not establish the digest's provenance.
 
 On 2026-11-06, official HLDS build 10211 was inspected offline without a
 client. `SV_FullClientUpdate` hashes the entire 64-byte `hashedcdkey` field
