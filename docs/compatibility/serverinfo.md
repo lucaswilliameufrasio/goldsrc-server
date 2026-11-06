@@ -31,6 +31,17 @@ file and prepares its CRC before opening the socket; errors abort startup. This
 does not load a playable world or send serverinfo. Without the option, startup
 behavior is unchanged. Maps remain operator-supplied and are not redistributed.
 
+When `GOLDSRC_MAP_BSP` is supplied, startup also reads the BSP entity lump into
+bounded raw key/value records and requires the first entity to have a consistent
+`worldspawn` classname. The parser accepts quoted fields and line comments;
+it rejects malformed, overlong or truncated input and applies explicit size,
+entity-count and field-count limits. Duplicate worldspawn classname entries are
+accepted only if they agree, as observed in the local reference map. This is a
+conservative subset of entity syntax, not proof that every GoldSrc map loads.
+It does not execute entity code, validate geometry, instantiate a game world or
+enable sign-on. The CRC and entity lump are read from the same file handle, but
+operators must not modify the file while it is being loaded.
+
 The authenticated netchannel also has a preparation-only `prepare_serverinfo`
 path. It requires an existing session still awaiting `new`, uses that session's
 allocated slot regardless of the supplied template slot, and validates the

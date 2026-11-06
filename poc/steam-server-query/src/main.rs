@@ -37,12 +37,13 @@ const CHALLENGE: i32 = 0x4353_3136;
 
 fn main() -> std::io::Result<()> {
     let _prepared_map = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
-        let (lumps, crc) = steam_server_query_poc::map::inspect(std::path::Path::new(&path))?;
+        let (entities, crc) =
+            steam_server_query_poc::map::load_entities(std::path::Path::new(&path))?;
         eprintln!(
-            "Map metadata prepared: {} lumps, CRC 0x{crc:08x}; sign-on disabled",
-            lumps.len()
+            "Map entities loaded: {}, CRC 0x{crc:08x}; world simulation and sign-on disabled",
+            entities.len()
         );
-        Some(crc)
+        Some((entities, crc))
     } else {
         None
     };
