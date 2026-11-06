@@ -44,11 +44,14 @@ operators must not modify the file while it is being loaded.
 
 Startup also loads the BSP planes and model records from that file, checking
 record sizes, finite coordinates, model bounds, root node/clipnode indices,
-visible-leaf counts and face ranges. Node, clipnode, leaf and face record counts
-are bounded and checked for proper record alignment. This is only a geometry
-subset: node children and plane references, clipnode internals, faces, vertices,
-collision traversal and rendering data are not yet decoded or validated. A
-successful load does not prove a playable or safe collision world.
+visible-leaf counts and face ranges. Nodes, leaves and clipnodes are decoded;
+their plane, child, leaf, visibility-offset and marksurface-range references are
+checked. An iterative traversal rejects cycles even in unreachable components.
+Negative clipnode children are retained as contents codes without asserting that
+every code is supported by a future collision implementation. This is only a
+geometry subset: marksurface entries, face internals, vertices, visibility data,
+collision traversal and rendering data are not yet decoded or fully validated.
+A successful load does not prove a playable or safe collision world.
 
 The authenticated netchannel also has a preparation-only `prepare_serverinfo`
 path. It requires an existing session still awaiting `new`, uses that session's
