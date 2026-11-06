@@ -266,6 +266,11 @@ pub(crate) mod tests {
                 0x71, 0x48
             ]
         );
+        let mut same_prefix = [0_u8; 64];
+        same_prefix[..32].fill(b'x');
+        let first = player_update_digest(&same_prefix);
+        same_prefix[63] = 1;
+        assert_ne!(first, player_update_digest(&same_prefix));
     }
 
     pub(crate) fn synthetic<'a>(delta: &'a [u8]) -> Signon<'a> {

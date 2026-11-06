@@ -35,13 +35,29 @@ path yet; it neither manufactures the digest nor implements an active world.
 On 2026-11-06, official HLDS build 10211 was inspected offline without a
 client. `SV_FullClientUpdate` hashes the entire 64-byte `hashedcdkey` field
 with MD5, including bytes after any NUL. `examples/hlds_player_digest.gdb`
-checks the actual HLDS output against independent MD5 computations for two
+checks the actual HLDS output against independent MD5 computations for four
 synthetic 64-byte patterns. `signon::player_update_digest` implements that
 transformation; MD5 is required for this legacy wire field, not authentication
 or security. The real Steam client's field provenance and safe lifecycle remain
 unverified: no ticket, password, live key material or fixed default may be
 substituted. The helper is not connected to real traffic and does not implement
 Steam approval or a player admission decision.
+
+Inspection of the same HLDS build's `SV_CheckKeyInfo` showed that protocol 3
+obtains the candidate key from the `cdkey` field of `protinfo`, checks its
+length is 32, and requires a nonempty `raw` field. The isolated
+`examples/hlds_keyinfo_synthetic.gdb` confirms lookup and copy with synthetic
+input, without connecting a client or saving that field. Disassembly of
+`SV_ConnectClient` shows a 32-byte copy into `hashedcdkey` and a NUL at offset
+32. The remaining bytes of the 64-byte destination across slot reuse have not
+been established. A separate isolated `SV_FullClientUpdate` test confirms that
+changing a synthetic byte after offset 32 changes the emitted digest.
+
+These observations do not establish what an official Steam client supplies,
+nor authorize logging or persisting either field. The current connect parser
+does not implement these HLDS-specific field checks. Do not infer the remaining
+bytes, use an all-zero default, or treat the digest as Steam authentication.
+No real credential value was examined during this investigation.
 
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
