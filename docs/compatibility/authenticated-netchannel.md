@@ -89,6 +89,21 @@ or real credential. The result does not cover selection of a different-address
 empty slot or prove the state of any real Steam connection. A protocol-3 trial
 without a real ticket was rejected; no authentication check was bypassed.
 
+`examples/hlds_empty_slot_synthetic.gdb` tests the other selection branch on
+the same build. After initializing and normally dropping a previously inactive
+synthetic slot, the probe changes its saved address type to a different one
+from the incoming loopback address. A synthetic protocol-2 LAN proxy command
+then reaches `SV_FindEmptySlot`, selects slot 0, and reaches the breakpoint
+before `Steam_GSBSecure`. At that point the first 32 bytes were replaced, byte
+32 was NUL, and bytes 33..63 retained the pattern from before the drop. The
+internal connected flag had been set, but the call did not complete. The
+address change and initial slot are synthetic, not a real prior client session;
+the result is not evidence of Steam approval or a real credential's contents.
+
+For either tested reuse branch, do not substitute zero for the remaining bytes
+or generalize to other HLDS builds. A real-world producer and a safe lifecycle
+for the actual session inputs are still absent.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
