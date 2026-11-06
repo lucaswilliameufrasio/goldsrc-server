@@ -44,9 +44,43 @@ pub struct Geometry {
     pub nodes: Vec<Node>,
     pub leaves: Vec<Leaf>,
     pub clipnodes: Vec<Clipnode>,
+    pub faces: Vec<Face>,
+    pub marksurfaces: Vec<u16>,
     pub node_count: usize,
     pub clipnode_count: usize,
     pub face_count: usize,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Face {
+    pub plane: u16,
+    pub side: i16,
+    pub first_edge: i32,
+    pub edge_count: i16,
+    pub texinfo: i16,
+    pub styles: [u8; 4],
+    pub light_offset: i32,
+}
+
+/// Validate one compressed visibility row, without retaining expanded bytes.
+fn validate_visibility_row(data: &[u8], offset: usize, row_bytes: usize) -> io::Result<()> {
+    let mut pos = offset;
+    let mut expanded = 0_usize;
+    while expanded < row_bytes {
+        let byte = *data.get(pos).ok_or_else(invalid_geometry)?;
+        pos += 1;
+        if byte == 0 {
+            let count = usize::from(*data.get(pos).ok_or_else(invalid_geometry)?);
+            pos += 1;
+            if count == 0 {
+                return Err(invalid_geometry());
+            }
+            expanded += count;
+        } else {
+            expanded += 1;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq)]
@@ -157,6 +191,10 @@ fn geometry_from_reader(reader: &mut (impl Read + Seek), size: u64) -> io::Resul
     let clipnode_count = records(&lumps[9], 8)?;
     let leaf_count = records(&lumps[10], 28)?;
     let marksurface_count = records(&lumps[11], 2)?;
+    let surfedge_count = records(&lumps[13], 4)?;
+    let edge_count = records(&lumps[12], 4)?;
+    let vertex_count = records(&lumps[3], 12)?;
+    let texinfo_count = records(&lumps[6], 40)?;
     let model_count = records(&lumps[14], 64)?;
     if plane_count == 0 || model_count == 0 || node_count == 0 || leaf_count == 0 {
         return Err(invalid_geometry());
@@ -313,19 +351,112 @@ fn geometry_from_reader(reader: &mut (impl Read + Seek), size: u64) -> io::Resul
             face_count: count as u32,
         });
     }
+    let mut faces = Vec::with_capacity(face_count);
+    reader.seek(SeekFrom::Start(lumps[7].offset))?;
+    for _ in 0..face_count {
+        let mut record = [0; 20];
+        reader.read_exact(&mut record)?;
+        let plane = read_u16(&record, 0);
+        let side = read_i16(&record, 2);
+        let first_edge = read_i32(&record, 4);
+        let count = read_i16(&record, 8);
+        let texinfo = read_i16(&record, 10);
+        let light_offset = read_i32(&record, 16);
+        if usize::from(plane) >= plane_count
+            || !(0..=1).contains(&side)
+            || first_edge < 0
+            || count < 0
+            || texinfo < 0
+            || texinfo as usize >= texinfo_count
+            || (first_edge as usize)
+                .checked_add(count as usize)
+                .is_none_or(|end| end > surfedge_count)
+            || light_offset < -1
+            || (light_offset >= 0 && light_offset as u64 >= lumps[8].length)
+        {
+            return Err(invalid_geometry());
+        }
+        faces.push(Face {
+            plane,
+            side,
+            first_edge,
+            edge_count: count,
+            texinfo,
+            styles: record[12..16].try_into().unwrap(),
+            light_offset,
+        });
+    }
+    let mut marksurfaces = Vec::with_capacity(marksurface_count);
+    reader.seek(SeekFrom::Start(lumps[11].offset))?;
+    for _ in 0..marksurface_count {
+        let mut record = [0; 2];
+        reader.read_exact(&mut record)?;
+        let index = u16::from_le_bytes(record);
+        if usize::from(index) >= face_count {
+            return Err(invalid_geometry());
+        }
+        marksurfaces.push(index);
+    }
+    reader.seek(SeekFrom::Start(lumps[12].offset))?;
+    for _ in 0..edge_count {
+        let mut record = [0; 4];
+        reader.read_exact(&mut record)?;
+        if usize::from(read_u16(&record, 0)) >= vertex_count
+            || usize::from(read_u16(&record, 2)) >= vertex_count
+        {
+            return Err(invalid_geometry());
+        }
+    }
+    reader.seek(SeekFrom::Start(lumps[13].offset))?;
+    for _ in 0..surfedge_count {
+        let mut record = [0; 4];
+        reader.read_exact(&mut record)?;
+        let edge = i32::from_le_bytes(record);
+        let index = edge.checked_abs().ok_or_else(invalid_geometry)? as usize;
+        if index >= edge_count {
+            return Err(invalid_geometry());
+        }
+    }
+    if lumps[4].length > 16 * 1024 * 1024 {
+        return Err(invalid_geometry());
+    }
+    let mut visibility = vec![0; lumps[4].length as usize];
+    reader.seek(SeekFrom::Start(lumps[4].offset))?;
+    reader.read_exact(&mut visibility)?;
+    let row_bytes = (models[0].visleafs as usize).div_ceil(8);
+    let mut offsets = std::collections::HashSet::new();
+    const MAX_VISIBILITY_WORK: usize = 64 * 1024 * 1024;
+    for leaf in &leaves {
+        if leaf.visibility_offset < 0 {
+            continue;
+        }
+        let offset = leaf.visibility_offset as usize;
+        if offsets.insert(offset) {
+            if offsets
+                .len()
+                .checked_mul(row_bytes)
+                .is_none_or(|work| work > MAX_VISIBILITY_WORK)
+            {
+                return Err(invalid_geometry());
+            }
+            validate_visibility_row(&visibility, offset, row_bytes)?;
+        }
+    }
     Ok(Geometry {
         planes,
         models,
         nodes,
         leaves,
         clipnodes,
+        faces,
+        marksurfaces,
         node_count,
         clipnode_count,
         face_count,
     })
 }
 
-/// Load a bounded geometry subset; face and marksurface entries are not decoded yet.
+/// Load a bounded geometry subset; vertices and lighting data are not decoded yet.
 pub fn load_geometry(path: &Path) -> io::Result<Geometry> {
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
@@ -549,6 +680,64 @@ pub fn inspect(path: &Path) -> io::Result<(Vec<Lump>, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visibility_rows_reject_truncation_and_zero_runs() {
+        assert!(validate_visibility_row(&[1, 0, 4], 0, 4).is_ok());
+        assert!(validate_visibility_row(&[0, 3], 0, 3).is_ok());
+        assert!(validate_visibility_row(&[0], 0, 1).is_err());
+        assert!(validate_visibility_row(&[0, 0], 0, 1).is_err());
+        assert!(validate_visibility_row(&[1], 0, 2).is_err());
+        assert!(validate_visibility_row(&[], 0, 1).is_err());
+    }
+
+    #[test]
+    fn faces_marksurfaces_and_edge_references_are_bounded() {
+        let mut bsp = synthetic_geometry();
+        let mut face = vec![0; 20];
+        face[8..10].copy_from_slice(&1_i16.to_le_bytes());
+        face[16..20].copy_from_slice(&(-1_i32).to_le_bytes());
+        for (index, bytes) in [
+            (3, vec![0; 12]),
+            (6, vec![0; 40]),
+            (7, face),
+            (11, vec![0; 2]),
+            (12, vec![0; 4]),
+            (13, vec![0; 4]),
+        ] {
+            let header = 4 + index * 8;
+            let offset = bsp.len() as i32;
+            bsp[header..header + 4].copy_from_slice(&offset.to_le_bytes());
+            bsp[header + 4..header + 8].copy_from_slice(&(bytes.len() as i32).to_le_bytes());
+            bsp.extend_from_slice(&bytes);
+        }
+        let valid =
+            geometry_from_reader(&mut std::io::Cursor::new(&bsp), bsp.len() as u64).unwrap();
+        assert_eq!(valid.faces.len(), 1);
+        assert_eq!(valid.marksurfaces, [0]);
+        let position = |index: usize| -> usize {
+            let header = 4 + index * 8;
+            i32::from_le_bytes(bsp[header..header + 4].try_into().unwrap()) as usize
+        };
+        for (offset, bytes) in [
+            (position(7), 1_u16.to_le_bytes().to_vec()),
+            (position(7) + 2, 2_i16.to_le_bytes().to_vec()),
+            (position(7) + 4, 1_i32.to_le_bytes().to_vec()),
+            (position(7) + 10, 1_i16.to_le_bytes().to_vec()),
+            (position(7) + 16, 0_i32.to_le_bytes().to_vec()),
+            (position(11), 1_u16.to_le_bytes().to_vec()),
+            (position(12), 1_u16.to_le_bytes().to_vec()),
+            (position(13), i32::MIN.to_le_bytes().to_vec()),
+            (position(13), 1_i32.to_le_bytes().to_vec()),
+        ] {
+            let mut invalid = bsp.clone();
+            invalid[offset..offset + bytes.len()].copy_from_slice(&bytes);
+            assert!(
+                geometry_from_reader(&mut std::io::Cursor::new(&invalid), invalid.len() as u64)
+                    .is_err()
+            );
+        }
+    }
 
     fn synthetic_geometry() -> Vec<u8> {
         let mut bsp = vec![0; HEADER_SIZE];

@@ -49,9 +49,15 @@ their plane, child, leaf, visibility-offset and marksurface-range references are
 checked. An iterative traversal rejects cycles even in unreachable components.
 Negative clipnode children are retained as contents codes without asserting that
 every code is supported by a future collision implementation. This is only a
-geometry subset: marksurface entries, face internals, vertices, visibility data,
-collision traversal and rendering data are not yet decoded or fully validated.
-A successful load does not prove a playable or safe collision world.
+geometry subset: face plane, side, surfedge range, texture-info and light
+offsets are checked, as are marksurface-to-face, surfedge-to-edge and
+edge-to-vertex indices. Referenced compressed visibility rows must terminate
+without truncation or zero-length runs, with bounded aggregate validation work.
+A final zero run may extend past the logical row, as in the reference map; no
+expanded row is written by this validator. Vertex coordinates, texture data,
+lightmap extents, semantic visibility, collision traversal and rendering data
+are not yet fully validated. A successful load does not prove a playable or
+safe collision world.
 
 The authenticated netchannel also has a preparation-only `prepare_serverinfo`
 path. It requires an existing session still awaiting `new`, uses that session's
