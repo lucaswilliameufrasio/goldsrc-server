@@ -1,8 +1,17 @@
 //! Experimental sign-on message preparation; not enabled in the live flow.
 use crate::serverinfo::ServerInfo;
+use md5::{Digest, Md5};
 use std::io::{self, Error, ErrorKind};
 
 const MAX_MESSAGE: usize = 65_536;
+
+/// GoldSrc's legacy wire digest of the full fixed-width server-side key field.
+/// This is not Steam authentication or a security primitive. The caller must
+/// supply the actual 64-byte field; never substitute a ticket, password or default.
+#[allow(dead_code)]
+pub fn player_update_digest(hashed_cd_key: &[u8; 64]) -> [u8; 16] {
+    Md5::digest(hashed_cd_key).into()
+}
 
 /// Values in HLDS wire order, either side of the footsteps byte.
 pub struct Movevars<'a> {
@@ -228,6 +237,36 @@ impl NewResponse<'_> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn player_update_digest_hashes_all_64_bytes_including_nuls() {
+        let mut sequential = [0_u8; 64];
+        for (index, byte) in sequential.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        assert_eq!(
+            player_update_digest(&[0; 64]),
+            [
+                0x3b, 0x5d, 0x3c, 0x7d, 0x20, 0x7e, 0x37, 0xdc, 0xee, 0xed, 0xd3, 0x01, 0xe3, 0x5e,
+                0x2e, 0x58
+            ]
+        );
+        assert_eq!(
+            player_update_digest(&sequential),
+            [
+                0xb2, 0xd3, 0xf5, 0x6b, 0xc1, 0x97, 0xfd, 0x98, 0x5d, 0x59, 0x65, 0x07, 0x9b, 0x5e,
+                0x71, 0x48
+            ]
+        );
+        sequential[63] ^= 1;
+        assert_ne!(
+            player_update_digest(&sequential),
+            [
+                0xb2, 0xd3, 0xf5, 0x6b, 0xc1, 0x97, 0xfd, 0x98, 0x5d, 0x59, 0x65, 0x07, 0x9b, 0x5e,
+                0x71, 0x48
+            ]
+        );
+    }
 
     pub(crate) fn synthetic<'a>(delta: &'a [u8]) -> Signon<'a> {
         Signon {

@@ -12,6 +12,4 @@ steam-auth = ["dep:libloading"]
 crc32fast = "1.5.0"
 getrandom = "0.4.3"
 libloading = { version = "0.8.9", optional = true }
-
-[dev-dependencies]
 md-5 = "0.10.6"

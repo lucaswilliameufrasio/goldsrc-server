@@ -32,6 +32,17 @@ caller. Missing or unsafe names, unknown peers and sessions no longer awaiting
 sign-on and checks the transmitted fragment. No runtime producer invokes this
 path yet; it neither manufactures the digest nor implements an active world.
 
+On 2026-11-06, official HLDS build 10211 was inspected offline without a
+client. `SV_FullClientUpdate` hashes the entire 64-byte `hashedcdkey` field
+with MD5, including bytes after any NUL. `examples/hlds_player_digest.gdb`
+checks the actual HLDS output against independent MD5 computations for two
+synthetic 64-byte patterns. `signon::player_update_digest` implements that
+transformation; MD5 is required for this legacy wire field, not authentication
+or security. The real Steam client's field provenance and safe lifecycle remain
+unverified: no ticket, password, live key material or fixed default may be
+substituted. The helper is not connected to real traffic and does not implement
+Steam approval or a player admission decision.
+
 Rather than fabricate world CRCs, resource lists or delta schemas, recognize
 the client's `clc_stringcmd new` request and then send a reliable, explicit
 `svc_disconnect` explaining that world sign-on is not implemented. This proves
