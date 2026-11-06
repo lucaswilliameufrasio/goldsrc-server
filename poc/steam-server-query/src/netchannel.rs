@@ -538,10 +538,14 @@ impl Sessions {
     fn prepare_signon(
         &mut self,
         peer: SocketAddr,
+        expected_userid: u32,
         mut response: NewResponse<'_>,
         entries: &[ManifestEntry<'_>],
     ) -> Result<(), &'static str> {
         let channel = self.channels.get_mut(&peer).ok_or("netchan_unknown_peer")?;
+        if channel.identity.userid != expected_userid {
+            return Err("netchan_stale_session");
+        }
         if !matches!(channel.phase, Phase::AwaitingNew) {
             return Err("netchan_busy");
         }
@@ -725,6 +729,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stale_signon_plan_cannot_cross_session_replacement() {
+        let now = Instant::now();
+        let mut sessions = Sessions::new();
+        sessions.approve(peer(1), now).unwrap();
+        let old_userid = sessions.channels[&peer(1)].identity.userid;
+        sessions.revoke(peer(1), now).unwrap();
+        sessions.approve(peer(1), now).unwrap();
+        let new_userid = sessions.channels[&peer(1)].identity.userid;
+        assert_ne!(old_userid, new_userid);
+        assert_eq!(
+            sessions.prepare_signon(
+                peer(1),
+                old_userid,
+                response_for_sequence(),
+                &resource_for_sequence()
+            ),
+            Err("netchan_stale_session")
+        );
+        assert!(matches!(
+            sessions.channels[&peer(1)].phase,
+            Phase::AwaitingNew
+        ));
+        sessions
+            .prepare_signon(
+                peer(1),
+                new_userid,
+                response_for_sequence(),
+                &resource_for_sequence(),
+            )
+            .unwrap();
+        let update = sessions
+            .receive(peer(1), &packet(1, 0, b"\x03new\0"), now)
+            .unwrap();
+        assert_eq!(update.outcome, "netchan_signon_start");
+        sessions.revoke(peer(1), now).unwrap();
+        assert!(
+            sessions
+                .receive(peer(1), &packet(2, RELIABLE | 1, b"\x03sendres\0"), now)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn approved_player_update_is_bound_to_session_and_signon() {
         let now = Instant::now();
         let mut sessions = Sessions::new();
@@ -749,7 +796,7 @@ mod tests {
                 .any(|bytes| bytes == b"\\name\\Other\0")
         );
         sessions
-            .prepare_signon(peer(2), response, &resource_for_sequence())
+            .prepare_signon(peer(2), 2, response, &resource_for_sequence())
             .unwrap();
         assert!(sessions.prepare_player_update(peer(2), [0x42; 16]).is_err());
         let sent = sessions
@@ -827,7 +874,7 @@ mod tests {
         let mut sessions = Sessions::new();
         sessions.approve(peer(1), now).unwrap();
         sessions
-            .prepare_signon(peer(1), response, &entries)
+            .prepare_signon(peer(1), 1, response, &entries)
             .unwrap();
         let mut outgoing = sessions
             .receive(peer(1), &packet(1, 0, b"\x03new\0"), now)
@@ -915,12 +962,22 @@ mod tests {
         let mut sessions = Sessions::new();
         assert!(
             sessions
-                .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+                .prepare_signon(
+                    peer(1),
+                    1,
+                    response_for_sequence(),
+                    &resource_for_sequence()
+                )
                 .is_err()
         );
         sessions.approve(peer(1), now).unwrap();
         sessions
-            .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+            .prepare_signon(
+                peer(1),
+                1,
+                response_for_sequence(),
+                &resource_for_sequence(),
+            )
             .unwrap();
         let first = sessions
             .receive(peer(1), &packet(1, 0, b"\x03new\0"), now)
@@ -970,11 +1027,16 @@ mod tests {
         invalid.serverinfo.info.max_players = 0;
         assert!(
             sessions
-                .prepare_signon(peer(1), invalid, &resource_for_sequence())
+                .prepare_signon(peer(1), 1, invalid, &resource_for_sequence())
                 .is_err()
         );
         sessions
-            .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+            .prepare_signon(
+                peer(1),
+                1,
+                response_for_sequence(),
+                &resource_for_sequence(),
+            )
             .unwrap();
         let result = sessions
             .receive(peer(1), &packet(1, 0, b"\x03sendres\0"), now)
@@ -982,12 +1044,22 @@ mod tests {
         assert_eq!(result.outcome, "netchan_sendres_unexpected");
         assert!(
             sessions
-                .prepare_signon(peer(1), response_for_sequence(), &resource_for_sequence())
+                .prepare_signon(
+                    peer(1),
+                    1,
+                    response_for_sequence(),
+                    &resource_for_sequence()
+                )
                 .is_err()
         );
         sessions.approve(peer(2), now).unwrap();
         sessions
-            .prepare_signon(peer(2), response_for_sequence(), &resource_for_sequence())
+            .prepare_signon(
+                peer(2),
+                2,
+                response_for_sequence(),
+                &resource_for_sequence(),
+            )
             .unwrap();
         sessions
             .receive(peer(2), &packet(1, 0, b"\x03new\0"), now)

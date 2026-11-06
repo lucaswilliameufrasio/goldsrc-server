@@ -164,6 +164,12 @@ Tests exercise the sequence using synthetic data. No live world producer install
 such a plan yet, so the normal `new` still disconnects. This does not implement
 resource downloads, callback decisions, complete sign-on or gameplay.
 
+Plan preparation also requires the approved session's user ID: a plan created
+for an earlier session is rejected if that endpoint is later revoked and reused
+by a different session. Revocation removes the channel and its prepared or
+in-flight plan. This is a lifecycle guard, not a world producer or Steam
+authentication; the runtime still does not install a sign-on plan.
+
 The test-only `NewResponse` appends user-message registrations, the
 `fullserverinfo` command and explicitly supplied client updates. Its userinfo
 filter strips keys starting with `_`, rejects control characters and unsafe
