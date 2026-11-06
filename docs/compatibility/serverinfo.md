@@ -42,6 +42,14 @@ It does not execute entity code, validate geometry, instantiate a game world or
 enable sign-on. The CRC and entity lump are read from the same file handle, but
 operators must not modify the file while it is being loaded.
 
+Startup also loads the BSP planes and model records from that file, checking
+record sizes, finite coordinates, model bounds, root node/clipnode indices,
+visible-leaf counts and face ranges. Node, clipnode, leaf and face record counts
+are bounded and checked for proper record alignment. This is only a geometry
+subset: node children and plane references, clipnode internals, faces, vertices,
+collision traversal and rendering data are not yet decoded or validated. A
+successful load does not prove a playable or safe collision world.
+
 The authenticated netchannel also has a preparation-only `prepare_serverinfo`
 path. It requires an existing session still awaiting `new`, uses that session's
 allocated slot regardless of the supplied template slot, and validates the

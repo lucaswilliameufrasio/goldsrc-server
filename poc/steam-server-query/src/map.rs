@@ -17,6 +17,169 @@ pub struct MapEntity {
     pub fields: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+/// A BSP plane, in on-disk coordinates.
+#[derive(Debug, PartialEq)]
+pub struct Plane {
+    pub normal: [f32; 3],
+    pub distance: f32,
+    pub kind: i32,
+}
+
+/// A BSP model and its root hull references; not a live game entity.
+#[derive(Debug, PartialEq)]
+pub struct Model {
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
+    pub origin: [f32; 3],
+    pub headnodes: [i32; 4],
+    pub visleafs: i32,
+    pub first_face: u32,
+    pub face_count: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Geometry {
+    pub planes: Vec<Plane>,
+    pub models: Vec<Model>,
+    pub node_count: usize,
+    pub clipnode_count: usize,
+    pub face_count: usize,
+}
+
+fn invalid_geometry() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "invalid BSP geometry")
+}
+
+fn read_i32(record: &[u8], offset: usize) -> i32 {
+    i32::from_le_bytes(record[offset..offset + 4].try_into().unwrap())
+}
+
+fn read_vec3(record: &[u8], offset: usize) -> [f32; 3] {
+    std::array::from_fn(|index| f32::from_bits(read_i32(record, offset + 4 * index) as u32))
+}
+
+fn records(lump: &Lump, width: usize) -> io::Result<usize> {
+    if lump.length > 16 * 1024 * 1024 || !lump.length.is_multiple_of(width as u64) {
+        return Err(invalid_geometry());
+    }
+    Ok((lump.length / width as u64) as usize)
+}
+
+fn geometry_from_reader(reader: &mut (impl Read + Seek), size: u64) -> io::Result<Geometry> {
+    let mut header = [0; HEADER_SIZE];
+    reader.seek(SeekFrom::Start(0))?;
+    reader.read_exact(&mut header)?;
+    let lumps = parse_header(&header, size)?;
+    let plane_count = records(&lumps[1], 20)?;
+    let node_count = records(&lumps[5], 24)?;
+    let face_count = records(&lumps[7], 20)?;
+    let clipnode_count = records(&lumps[9], 8)?;
+    let leaf_count = records(&lumps[10], 28)?;
+    let model_count = records(&lumps[14], 64)?;
+    if plane_count == 0 || model_count == 0 || node_count == 0 || leaf_count == 0 {
+        return Err(invalid_geometry());
+    }
+    let mut planes = Vec::with_capacity(plane_count);
+    reader.seek(SeekFrom::Start(lumps[1].offset))?;
+    for _ in 0..plane_count {
+        let mut record = [0; 20];
+        reader.read_exact(&mut record)?;
+        let normal = read_vec3(&record, 0);
+        let distance = f32::from_bits(read_i32(&record, 12) as u32);
+        let kind = read_i32(&record, 16);
+        if !normal.iter().all(|value| value.is_finite())
+            || !distance.is_finite()
+            || normal == [0.0; 3]
+            || !(0..=5).contains(&kind)
+        {
+            return Err(invalid_geometry());
+        }
+        planes.push(Plane {
+            normal,
+            distance,
+            kind,
+        });
+    }
+    let mut models = Vec::with_capacity(model_count);
+    reader.seek(SeekFrom::Start(lumps[14].offset))?;
+    for _ in 0..model_count {
+        let mut record = [0; 64];
+        reader.read_exact(&mut record)?;
+        let mins = read_vec3(&record, 0);
+        let maxs = read_vec3(&record, 12);
+        let origin = read_vec3(&record, 24);
+        let headnodes: [i32; 4] = std::array::from_fn(|index| read_i32(&record, 36 + index * 4));
+        let visleafs = read_i32(&record, 52);
+        let first = read_i32(&record, 56);
+        let count = read_i32(&record, 60);
+        if !mins
+            .iter()
+            .chain(maxs.iter())
+            .chain(origin.iter())
+            .all(|value| value.is_finite())
+            || (0..3).any(|index| mins[index] > maxs[index])
+            || headnodes[0] < 0
+            || headnodes[0] as usize >= node_count
+            || headnodes[1..]
+                .iter()
+                .any(|index| *index >= 0 && *index as usize >= clipnode_count)
+            || visleafs < 0
+            || visleafs as usize > leaf_count
+            || first < 0
+            || count < 0
+            || (first as usize)
+                .checked_add(count as usize)
+                .is_none_or(|end| end > face_count)
+        {
+            return Err(invalid_geometry());
+        }
+        models.push(Model {
+            mins,
+            maxs,
+            origin,
+            headnodes,
+            visleafs,
+            first_face: first as u32,
+            face_count: count as u32,
+        });
+    }
+    Ok(Geometry {
+        planes,
+        models,
+        node_count,
+        clipnode_count,
+        face_count,
+    })
+}
+
+/// Load a bounded geometry subset; internal BSP tree and face indices are not validated yet.
+pub fn load_geometry(path: &Path) -> io::Result<Geometry> {
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "map is not a regular file",
+        ));
+    }
+    geometry_from_reader(&mut file, metadata.len())
+}
+
+/// Load the available world subset without instantiating gameplay state.
+pub fn load_world(path: &Path) -> io::Result<(Vec<MapEntity>, u32, Geometry)> {
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "map is not a regular file",
+        ));
+    }
+    let (entities, crc) = read_entities(&mut file, metadata.len())?;
+    let geometry = geometry_from_reader(&mut file, metadata.len())?;
+    Ok((entities, crc, geometry))
+}
+
 fn invalid_entities() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid BSP entity lump")
 }
@@ -213,6 +376,71 @@ pub fn inspect(path: &Path) -> io::Result<(Vec<Lump>, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synthetic_geometry() -> Vec<u8> {
+        let mut bsp = vec![0; HEADER_SIZE];
+        bsp[..4].copy_from_slice(&30_i32.to_le_bytes());
+        let mut plane = vec![0_u8; 20];
+        plane[..4].copy_from_slice(&1.0_f32.to_le_bytes());
+        let mut model = vec![0_u8; 64];
+        for index in 1..4 {
+            model[36 + index * 4..40 + index * 4].copy_from_slice(&(-1_i32).to_le_bytes());
+        }
+        for (index, bytes) in [(1, plane), (5, vec![0; 24]), (10, vec![0; 28]), (14, model)] {
+            let position = 4 + index * 8;
+            let offset = bsp.len() as i32;
+            bsp[position..position + 4].copy_from_slice(&offset.to_le_bytes());
+            bsp[position + 4..position + 8].copy_from_slice(&(bytes.len() as i32).to_le_bytes());
+            bsp.extend_from_slice(&bytes);
+        }
+        bsp
+    }
+
+    #[test]
+    fn geometry_loads_and_rejects_invalid_model_references() {
+        let original = synthetic_geometry();
+        let geometry =
+            geometry_from_reader(&mut std::io::Cursor::new(&original), original.len() as u64)
+                .unwrap();
+        assert_eq!(geometry.planes.len(), 1);
+        assert_eq!(geometry.models.len(), 1);
+        assert_eq!(geometry.planes[0].normal, [1.0, 0.0, 0.0]);
+        let model_offset = i32::from_le_bytes(original[116..120].try_into().unwrap()) as usize;
+        for (offset, value) in [(36, 1_i32), (40, 0), (52, 2), (56, -1), (60, 1)] {
+            let mut invalid = original.clone();
+            invalid[model_offset + offset..model_offset + offset + 4]
+                .copy_from_slice(&value.to_le_bytes());
+            assert!(
+                geometry_from_reader(&mut std::io::Cursor::new(&invalid), invalid.len() as u64)
+                    .is_err()
+            );
+        }
+        let mut invalid = original.clone();
+        invalid[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(
+            geometry_from_reader(&mut std::io::Cursor::new(&invalid), invalid.len() as u64)
+                .is_err()
+        );
+        assert!(
+            geometry_from_reader(
+                &mut std::io::Cursor::new(&original[..original.len() - 1]),
+                original.len() as u64
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS map"]
+    fn loads_geometry_from_local_reference_map() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let path = Path::new(&root).join("reference-hlds/cstrike/maps/de_dust2.bsp");
+        let geometry = load_geometry(&path).unwrap();
+        assert!(!geometry.models.is_empty());
+        assert!(!geometry.planes.is_empty());
+        assert!(geometry.node_count > 0);
+    }
 
     #[test]
     fn parses_worldspawn_and_entities_as_bytes() {
