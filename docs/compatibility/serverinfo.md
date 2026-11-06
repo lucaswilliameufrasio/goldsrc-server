@@ -59,6 +59,21 @@ lightmap extents, semantic visibility, collision traversal and rendering data
 are not yet fully validated. A successful load does not prove a playable or
 safe collision world.
 
+`Geometry::point_contents` traverses a selected model hull using model-local
+coordinates and returns the legacy contents code. It bounds traversal even if a
+caller mutates the public geometry after loading, rejects invalid indices and
+nonfinite arithmetic, and does not transform entity coordinates. On the local
+HLDS 10211 `de_dust2` reference, `examples/hlds_hull_points.gdb` recorded five
+synthetic points for each of the four world-model hulls. The opt-in
+`hull_point_contents_matches_local_hlds` test matches those 20 outputs. This
+is not a swept trace, player movement, entity collision or a live world.
+
+```sh
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --lib \
+  hull_point_contents_matches_local_hlds -- --ignored
+```
+
 The authenticated netchannel also has a preparation-only `prepare_serverinfo`
 path. It requires an existing session still awaiting `new`, uses that session's
 allocated slot regardless of the supplied template slot, and validates the

@@ -51,6 +51,66 @@ pub struct Geometry {
     pub face_count: usize,
 }
 
+impl Geometry {
+    /// Query a model's BSP hull in model-local coordinates. This is not a sweep
+    /// or a collision test against moving entities.
+    pub fn point_contents(&self, model: usize, hull: usize, point: [f32; 3]) -> io::Result<i32> {
+        if hull >= 4 || !point.iter().all(|coordinate| coordinate.is_finite()) {
+            return Err(invalid_geometry());
+        }
+        let model = self.models.get(model).ok_or_else(invalid_geometry)?;
+        let mut index = model.headnodes[hull];
+        let budget = if hull == 0 {
+            self.nodes.len()
+        } else {
+            self.clipnodes.len()
+        };
+        for _ in 0..=budget {
+            if index < 0 {
+                if hull == 0 {
+                    let leaf = (-1_i64 - i64::from(index)) as usize;
+                    return self
+                        .leaves
+                        .get(leaf)
+                        .map(|entry| entry.contents)
+                        .ok_or_else(invalid_geometry);
+                }
+                return Ok(index);
+            }
+            let (plane_index, children) = if hull == 0 {
+                let node = self
+                    .nodes
+                    .get(index as usize)
+                    .ok_or_else(invalid_geometry)?;
+                (node.plane, node.children)
+            } else {
+                let node = self
+                    .clipnodes
+                    .get(index as usize)
+                    .ok_or_else(invalid_geometry)?;
+                (node.plane, node.children)
+            };
+            let plane = self
+                .planes
+                .get(plane_index as usize)
+                .ok_or_else(invalid_geometry)?;
+            let distance = if (0..3).contains(&plane.kind) {
+                point[plane.kind as usize] - plane.distance
+            } else if (3..=5).contains(&plane.kind) {
+                plane.normal[0] * point[0] + plane.normal[1] * point[1] + plane.normal[2] * point[2]
+                    - plane.distance
+            } else {
+                return Err(invalid_geometry());
+            };
+            if !distance.is_finite() {
+                return Err(invalid_geometry());
+            }
+            index = i32::from(children[usize::from(distance < 0.0)]);
+        }
+        Err(invalid_geometry())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Face {
     pub plane: u16,
@@ -680,6 +740,59 @@ pub fn inspect(path: &Path) -> io::Result<(Vec<Lump>, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hull_point_contents_checks_sides_boundaries_and_invalid_inputs() {
+        let input = synthetic_geometry();
+        let mut geometry =
+            geometry_from_reader(&mut std::io::Cursor::new(&input), input.len() as u64).unwrap();
+        geometry.nodes[0].children = [-1, -1];
+        geometry.leaves[0].contents = -2;
+        geometry.models[0].headnodes[1] = 0;
+        geometry.clipnodes[0].children = [-1, -2];
+        assert_eq!(geometry.point_contents(0, 0, [0.0, 0.0, 0.0]).unwrap(), -2);
+        assert_eq!(geometry.point_contents(0, 1, [0.0, 0.0, 0.0]).unwrap(), -1);
+        assert_eq!(geometry.point_contents(0, 1, [-1.0, 0.0, 0.0]).unwrap(), -2);
+        assert!(geometry.point_contents(1, 0, [0.0; 3]).is_err());
+        assert!(geometry.point_contents(0, 4, [0.0; 3]).is_err());
+        assert!(geometry.point_contents(0, 1, [f32::NAN, 0.0, 0.0]).is_err());
+        geometry.planes[0].kind = 3;
+        geometry.planes[0].normal = [0.0, 1.0, 0.0];
+        assert_eq!(geometry.point_contents(0, 1, [1.0, -1.0, 0.0]).unwrap(), -2);
+        geometry.clipnodes[0].children[0] = 0;
+        assert!(geometry.point_contents(0, 1, [1.0, 1.0, 0.0]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS map"]
+    fn hull_point_contents_matches_local_hlds() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let path = Path::new(&root).join("reference-hlds/cstrike/maps/de_dust2.bsp");
+        let geometry = load_geometry(&path).unwrap();
+        let points = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 128.0],
+            [100.0, 100.0, 100.0],
+            [-500.0, 1000.0, 0.0],
+            [4096.0, 4096.0, 4096.0],
+        ];
+        let expected = [
+            [-2, -2, -6, -1, -2],
+            [-2, -2, -2, -2, -2],
+            [-2, -2, -2, -2, -2],
+            [-2, -2, -2, -2, -2],
+        ];
+        for (hull, expected_hull) in expected.iter().enumerate() {
+            for (index, point) in points.iter().enumerate() {
+                assert_eq!(
+                    geometry.point_contents(0, hull, *point).unwrap(),
+                    expected_hull[index],
+                    "hull {hull}, point {index}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn visibility_rows_reject_truncation_and_zero_runs() {
