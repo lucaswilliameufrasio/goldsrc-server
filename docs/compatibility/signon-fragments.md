@@ -249,6 +249,9 @@ player state, or install a plan after Steam approval. A stale but internally
 consistent snapshot must not be treated as a live manifest. Without all three
 options the normal behavior is unchanged or, if partially specified, startup
 fails. Local captures remain ignored by Git.
+An all-features UDP integration test also verifies that a complete snapshot is
+parsed before the socket begins responding; its readiness message explicitly
+continues to say that world activation and sign-on are disabled.
 
 An additional opt-in test uses the local BSP CRC, generated deltas and validated
 snapshot to exercise `new`, fragment ACKs and `sendres` through a synthetic

@@ -386,11 +386,14 @@ it to the public internet.
   server shutdown contract for live players or durable operations.
 - **Current-revision fixture regression (2026-11-07):** after the shutdown
   change, the available opt-in HLDS references passed again: 9 library tests
-  covering map/CRC/hull/delta behavior and 12 binary tests covering resources,
-  serverinfo, sign-on assembly and netchannel sequencing. The local selected-map
-  inventory test also passed (eight parser successes; only `35hp_2` failed its
-  strict geometry gate), as did the normal default/all-feature suites. These
-  remain offline reference checks, not client sign-on or gameplay evidence.
+  covering map/CRC/hull/delta behavior and 13 binary tests covering resources,
+  serverinfo, sign-on assembly, netchannel sequencing and both selected-map wire
+  digests. An all-features UDP integration test also verified that a complete
+  resource snapshot is accepted before the listener responds while world and
+  sign-on remain disabled. The local selected-map inventory test passed (eight
+  parser successes; only `35hp_2` failed its strict geometry gate), as did the
+  normal default/all-feature suites. These remain offline checks, not client
+  sign-on or gameplay evidence.
 - **Selected-map resource wire comparison (2026-11-07):** the isolated HLDS
   metadata exporter loaded `de_dust2_2x2` and `fy_pool_day` with their BSPs
   mounted read-only, `network none`, and only a temporary map-directory mount
@@ -402,7 +405,10 @@ it to the public internet.
   `nDownloadSize=-1`, represented as the corresponding 24-bit wire value
   `0x00ffffff`; the complete digest matched. The local metadata remains ignored
   under `fixtures/local/selected-map-resource-evidence-wire24/`. This proves
-  offline serialization only, not client sign-on, downloads or gameplay.
+  offline serialization only, not client sign-on, downloads or gameplay. An
+  all-features UDP integration test confirms complete resource snapshots are
+  validated before the listener responds, while explicitly keeping world and
+  sign-on disabled.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the

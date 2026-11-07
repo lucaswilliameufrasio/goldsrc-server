@@ -320,3 +320,96 @@ fn incomplete_resource_snapshot_is_rejected_before_listening() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("resource"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
 }
+
+#[cfg(feature = "steam-auth")]
+#[test]
+fn should_prepare_complete_resource_snapshot_before_listening() {
+    let reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+
+    let directory = std::env::temp_dir().join(format!(
+        "goldsrc-resource-snapshot-test-{}-{}",
+        std::process::id(),
+        address.port()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    struct FixtureDirectory(std::path::PathBuf);
+    impl Drop for FixtureDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _fixture = FixtureDirectory(directory.clone());
+
+    let manifest = directory.join("manifest.tsv");
+    let checks = directory.join("checks.tsv");
+    std::fs::write(
+        &manifest,
+        format!("sound/test.wav\t0\t1\t10\t0\t{}\n", "00".repeat(32)),
+    )
+    .unwrap();
+    std::fs::write(&checks, "").unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"));
+    command
+        .env("LISTEN_ADDRESS", address.to_string())
+        .env("GOLDSRC_RESOURCE_MANIFEST", &manifest)
+        .env("GOLDSRC_RESOURCE_CHECKS", &checks)
+        .env("GOLDSRC_RESOURCE_SPAWN_COUNT", "1")
+        .env_remove("GOLDSRC_PACKET_TRACE")
+        .env_remove("GOLDSRC_STEAM_API")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut server = Server(command.spawn().unwrap());
+
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let mut packet = [0_u8; 128];
+    let mut ready = false;
+    for _ in 0..40 {
+        assert!(
+            server.0.try_wait().unwrap().is_none(),
+            "server rejected a complete resource snapshot"
+        );
+        client
+            .send_to(b"\xff\xff\xff\xffTSource Engine Query\0", address)
+            .unwrap();
+        match client.recv_from(&mut packet) {
+            Ok((length, peer)) => {
+                assert_eq!(peer, address);
+                assert_eq!(length, 9);
+                ready = true;
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP receive failed: {error}"),
+        }
+    }
+    assert!(
+        ready,
+        "server never listened with a complete resource snapshot"
+    );
+
+    server.0.kill().unwrap();
+    let _ = server.0.wait().unwrap();
+    let mut stderr = String::new();
+    server
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.contains("Resource snapshot prepared: 1 entries"));
+    assert!(stderr.contains("world and sign-on disabled"));
+}
