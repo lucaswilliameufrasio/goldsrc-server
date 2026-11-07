@@ -422,9 +422,12 @@ rate limit or production capacity; do not expose the PoC to the public internet.
   only after startup logged the spawn/objective metadata. Synthetic malformed-
   input tests, formatting, Clippy, default/all-feature tests, Python suites, and
   the opt-in local map inventory passed. The test still reports only `35hp_2`
-  as a strict geometry failure among nine local candidates. This is static
-  preparation only: team selection, hull offset, player placement, trigger
-  occupancy and bomb/round behavior remain unimplemented.
+  as a strict geometry failure among nine local candidates. It also traced each
+  raw spawn origin in the three spawn-map candidates with the measured standing-
+  player hull; none began in solid. This is a static raw-origin clearance check,
+  not verification of the game DLL's spawn adjustment or live placement. Team
+  selection, runtime spawn positioning, trigger occupancy and bomb/round
+  behavior remain unimplemented.
 - **Loaded-map query metadata (2026-11-07):** when `GOLDSRC_MAP_BSP` is set, the
   validated BSP filename stem is now used in A2S_INFO instead of always
   advertising `de_dust2`. The opt-in startup integration test completed the real

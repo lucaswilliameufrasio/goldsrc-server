@@ -40,6 +40,8 @@ in live admission.
 `movement::tests` exercises open motion, wall sliding, a floor impact, fully
 solid motion, and invalid inputs against synthetic one-plane BSPs. This proves
 the local collision primitive's contract only. It does not compare player
-movement output with HLDS or the official Steam client. The next movement slice
-must establish validated command/state inputs and compare a bounded movement
-case with the local HLDS reference before integration.
+movement output with HLDS or the official Steam client. Separately, the opt-in
+local map inventory traces the measured standing-player hull at each raw spawn
+origin; this checks static clearance only, not runtime spawn adjustment. The
+next movement slice must establish validated command/state inputs and compare a
+bounded movement case with the local HLDS reference before integration.

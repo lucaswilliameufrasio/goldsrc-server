@@ -64,8 +64,11 @@ policy. At startup, `GOLDSRC_MAP_BSP` now validates and reports spawn metadata
 alongside the parsed map/geometry, while keeping simulation and sign-on disabled.
 The selected-map inventory test validates those records against local maps, and
 synthetic tests reject missing, duplicate, non-finite and malformed origins.
-This is map metadata preparation only: it does not assign teams, apply player
-hull offsets, choose a spawn, or instantiate a live player.
+The local map inventory also tests each candidate spawn's raw BSP origin with the
+measured standing-player hull against the world collision BSP; all origins in
+the three parsed spawn-map candidates are outside solid. This is only a static
+clearance check at the raw map origin. It does not establish the game DLL's
+runtime spawn adjustment, assign teams, choose a spawn, or instantiate a player.
 `poc/steam-server-query/src/objectives.rs` also resolves each selected-map
 `func_bomb_target` model reference to a validated non-world BSP submodel and
 its raw bounds. This validates static entity-to-geometry linkage only; it does

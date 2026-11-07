@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use steam_server_query_poc::hull_trace::trace_bsp_entity;
 use steam_server_query_poc::map::{Geometry, MapEntity, load_world};
 use steam_server_query_poc::objectives::extract_bomb_target_brushes;
 use steam_server_query_poc::spawns::{SpawnEntityKind, extract_cs_spawn_entities};
@@ -32,7 +33,7 @@ fn count_classname(entities: &[MapEntity], classname: &[u8]) -> usize {
     count
 }
 
-fn assert_team_spawns(entities: &[MapEntity], map_name: &str) {
+fn assert_team_spawns(entities: &[MapEntity], geometry: &Geometry, map_name: &str) {
     assert!(count_classname(entities, b"info_player_start") > 0);
     assert!(count_classname(entities, b"info_player_deathmatch") > 0);
     let spawns = extract_cs_spawn_entities(entities)
@@ -62,6 +63,26 @@ fn assert_team_spawns(entities: &[MapEntity], map_name: &str) {
             .filter_map(|spawn| spawn.angle)
             .all(f32::is_finite)
     );
+
+    let player_mins = [-16.0, -16.0, -36.0];
+    let player_maxs = [16.0, 16.0, 36.0];
+    for spawn in &spawns {
+        let trace = trace_bsp_entity(
+            geometry,
+            0,
+            [0.0; 3],
+            player_mins,
+            player_maxs,
+            spawn.origin,
+            spawn.origin,
+        )
+        .unwrap_or_else(|error| panic!("spawn hull trace failed for {map_name}: {error}"));
+        assert!(
+            !trace.start_solid && !trace.all_solid,
+            "standing-player hull begins in solid at {:?} on {map_name}",
+            spawn.origin
+        );
+    }
 }
 
 fn assert_geometry_loaded(geometry: &Geometry) {
@@ -216,7 +237,7 @@ fn local_companion_map_candidates_parse_and_contain_expected_entities() {
                 assert_eq!(count_classname(&entities, b"func_bomb_target"), 1);
                 assert_eq!(count_classname(&entities, b"info_player_start"), 20);
                 assert_eq!(count_classname(&entities, b"info_player_deathmatch"), 20);
-                assert_team_spawns(&entities, map_name);
+                assert_team_spawns(&entities, &geometry, map_name);
                 assert_geometry_loaded(&geometry);
                 assert_bomb_target_brushes(&entities, &geometry, map_name);
             }
@@ -224,7 +245,7 @@ fn local_companion_map_candidates_parse_and_contain_expected_entities() {
                 let (entities, _, geometry) = result.expect("bomb candidate should parse");
                 assert_eq!(count_classname(&entities, b"func_bomb_target"), 1);
                 assert_eq!(count_classname(&entities, b"func_buyzone"), 1);
-                assert_team_spawns(&entities, map_name);
+                assert_team_spawns(&entities, &geometry, map_name);
                 assert_geometry_loaded(&geometry);
                 assert_bomb_target_brushes(&entities, &geometry, map_name);
             }
@@ -232,7 +253,7 @@ fn local_companion_map_candidates_parse_and_contain_expected_entities() {
                 let (entities, _, geometry) = result.expect("hostage candidate should parse");
                 assert_eq!(count_classname(&entities, b"hostage_entity"), 2);
                 assert_eq!(count_classname(&entities, b"info_hostage_rescue"), 2);
-                assert_team_spawns(&entities, map_name);
+                assert_team_spawns(&entities, &geometry, map_name);
                 assert_geometry_loaded(&geometry);
             }
             _ => {
