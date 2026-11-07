@@ -288,6 +288,13 @@ it to the public internet.
   HLDS 10211 fixtures. These validate offline message preparation and reliable
   transfer sequencing only; no sign-on packet was sent to a client and no
   official-client gameplay was verified.
+- **Expanded opt-in fixture verification (2026-11-07):** with
+  `GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local"`, the ignored map suite (4),
+  delta suite (2), resource suite (6), sign-on suite (2), and hull-trace suite
+  (3) all passed against the available local HLDS/map captures. The four
+  prepared netchannel/sign-on fixture tests listed above also passed. This is
+  21 offline fixture checks total; the generated `fixtures/local` assets remain
+  ignored, and none of these checks observes an official client's live response.
 - **ARM64 cross-target check (2026-11-07):** after adding Rust's
   `aarch64-unknown-linux-gnu` standard-library component,
   `cargo check --target aarch64-unknown-linux-gnu --all-targets --all-features`
