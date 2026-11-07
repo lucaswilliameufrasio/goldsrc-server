@@ -311,8 +311,11 @@ it to the public internet.
   client/HLDS version metadata, query summaries, and server-side movement vectors
   without raw packet files, plus a standard-library A2S_INFO summarizer that
   accepts only loopback/private targets and emits allowlisted fields. Its four
-  synthetic tests pass. A one-second query to loopback port 27015 received no
-  response, so live HLDS/client evidence remains pending.
+  five synthetic tests pass. A one-second host loopback query received no
+  response. An isolated retry with the local HLDS image (`--network none`, LAN
+  mode, no master server) found the process bound to UDP 27015 but still received
+  no query response after startup; a loopback UDP self-test in that image passed.
+  No logs or packet data were retained. Live HLDS/client evidence remains pending.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48

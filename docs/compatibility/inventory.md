@@ -58,7 +58,12 @@ The reference executable printed the expected protocol/build information, but
 did not remain healthy for a query summary in this container: its Steam runtime
 reported missing `libcurl.so`/trusted certificates and the process exited with
 signal 11. A later one-second loopback-only run of the sanitized query tool
-received no response from `127.0.0.1:27015`. Neither attempt is a successful
+received no response from `127.0.0.1:27015`. An isolated retry using the local
+HLDS image with networking disabled, LAN mode enabled, and master-server access
+disabled found the process bound to UDP 27015 but still received no query
+response after startup. A loopback UDP self-test inside that network-isolated
+image passed, so the query failure is not evidence that loopback was unavailable.
+No logs or packet data were retained; none of these attempts is a successful
 HLDS query result.
 
 ## Capture procedure
