@@ -137,6 +137,15 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let other_ip = SocketAddr::from(([127, 0, 0, 2], 27015));
+        assert!(
+            challenges
+                .handle_with_random(&request, other_ip, now, b"info", || {
+                    panic!("different source IP must not request entropy")
+                })
+                .unwrap()
+                .is_none()
+        );
         let wrong_token = challenge_packet(expected ^ 1);
         assert!(
             challenges
