@@ -9,7 +9,18 @@ extending its lifetime. Keep at most 1024 pending peers; silently drop new
 challenge requests when full, never evict another live peer. Consume a token
 only after a structurally valid connect with the matching challenge. Restart
 discards all pending tokens. This is a private development limit, not a measured
-production capacity or rate limiter. A2S retains its separate fixed challenge.
+production capacity or rate limiter.
+
+Source A2S_INFO uses a separate random 32-bit challenge bound to the complete
+source socket address for 30 seconds. Retries reuse an unexpired token without
+extending it; the token remains reusable by that peer until expiry. At most 1024
+query peers are retained, new peers are silently dropped when full, and expired
+entries are reclaimed without evicting live ones. This avoids letting an
+unrelated spoofed source use a fixed, publicly known query token to request the
+larger info response. It is bounded volatile state, not a per-peer rate limiter
+or measured production capacity. The official Steam browser has not validated
+this A2S behavior; public advertising/listing remains disabled and public binds
+remain rejected.
 
 Parse only bounded connectionless protocol-48 Steam connect envelopes. Validate
 decimal protocol/challenge, two quoted info strings, auth type `prot=3`, and
@@ -65,3 +76,13 @@ and on-disk trace outcomes/redaction/Unix permissions. Deterministic unit tests
 cover TTL boundaries, bounded-capacity recovery, malformed envelopes, entropy
 failure, and IP binding. Official-client acceptance of this parser is pending;
 the previous client's redacted connect payload cannot be replayed as a fixture.
+
+The A2S challenge was subsequently changed from a fixed token to an OS-random,
+peer-bound token with a separate bounded 1024-entry/30-second store. The current
+Rust unit/integration gates and the selected-map loopback query test pass; the
+query tests cover wrong-peer and wrong-token rejection, retry/expiry, table-full
+behavior, malformed packets and entropy failure. AArch64 GLIBC 2.17 cross-build
+and the isolated Bookworm QEMU query smoke also pass for the updated artifact.
+These are local protocol checks only: the official Steam browser has not been
+tested, there is still no per-peer rate limit, and the configured capacities are
+not production load measurements.

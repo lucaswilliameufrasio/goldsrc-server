@@ -323,7 +323,7 @@ it to the public internet.
   `/lib/ld-linux-aarch64.so.1`, dynamic dependencies on `libc.so.6`,
   `libpthread.so.0`, and `libdl.so.2`, and imports through `GLIBC_2.17` only.
   Its SHA-256 is
-  `153ca5629db19853fe6aafaa3f175567e9291ce9548024a5dddc7d53312e1be3`.
+  `7e37597f681b5ba3b5ab8a9fe9f1c2eb78b4b2283dae54588336c7b170bac2b8`.
   The 2.17 symbol floor was selected provisionally, not from a confirmed host
   baseline. The owner identifies the intended host as ARM64, but the authorized
   read-only SSH probe failed at name resolution, so its OS release and GLIBC
@@ -365,8 +365,8 @@ it to the public internet.
   The initial tested ELF had SHA-256
   `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`. The
   latest cross-build after resource, spawn/objective, startup-metadata and
-  loaded-map A2S reporting work
-  (`153ca5629db19853fe6aafaa3f175567e9291ce9548024a5dddc7d53312e1be3`) was
+  loaded-map A2S reporting and peer-bound query challenges
+  (`7e37597f681b5ba3b5ab8a9fe9f1c2eb78b4b2283dae54588336c7b170bac2b8`) was
   smoke-tested again; the target loader reports `GLIBC 2.36`. With the rootfs
   and ELF mounted read-only, Docker `network none`, no published ports, and the
   program bound to `127.0.0.1:27025`, the sanitized query helper received the
@@ -430,6 +430,15 @@ it to the public internet.
   two-step UDP query against each selected local map and parsed the returned map
   field. Synthetic tests cover allowed names and unsafe/overlong stems. This
   remains query metadata only, not client sign-on or active world evidence.
+- **A2S challenge hardening (2026-11-07):** the formerly fixed query token is
+  now an OS-random 32-bit value bound to the requesting UDP endpoint, with a
+  30-second TTL and a 1024-peer state cap. Retries reuse the token without
+  extending expiry; valid challenges remain reusable until expiry. Capacity,
+  TTL, wrong-peer/token, malformed-packet and entropy-failure behavior have
+  deterministic tests, and real loopback UDP tests still complete A2S_INFO.
+  This prevents a known fixed token from directly eliciting the larger response
+  from a spoofed endpoint; it is not per-peer rate limiting or a production
+  capacity claim. Steam browser compatibility remains unverified.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
@@ -497,7 +506,9 @@ ARM64 execution remains unverified. See the updated
   not established, so do not invent plugin replacements or admin/data contracts.
 - Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
-  and measured load tests on ARM64 hardware. The local `cargo zigbuild` artifact
+  and measured load tests on ARM64 hardware. Game and A2S challenge state is
+  bounded but has no per-peer request-rate control; these are development caps,
+  not measured production capacity. The local `cargo zigbuild` artifact
   imports through GLIBC 2.17 and passed the emulated Bookworm smoke above, but
   the deployment release/baseline and native ARM64 runtime validation remain
   unverified. The workstation has no route to the target host and Buildx reports

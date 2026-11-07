@@ -10,8 +10,8 @@ optionally authenticate with Steam and accept an initial channel, but cannot
 complete sign-on or admit players. It does not register with the master server.
 It binds to `127.0.0.1` by default. An explicit private LAN or
 Tailscale IP can be selected with `LISTEN_ADDRESS`; wildcard and public IPs are
-rejected. Because the PoC uses a fixed challenge, do not expose it to the public
-internet.
+rejected. Challenge state is bounded and volatile, but the PoC has no measured
+per-peer rate limits or production abuse capacity; keep it on private networks.
 
 ## Documents
 
@@ -37,6 +37,9 @@ client's `getchallenge steam` on `127.0.0.1:27025`. Game challenges are bound to
 the source IP/port, expire after 30 seconds, and are consumed by a well-formed
 connect. Subsequent game connections undergo bounded envelope validation and
 receive explicit errors or a Steam-auth-unavailable rejection, never admission.
+Source A2S_INFO challenges are independently random, source-IP/port-bound, and
+expire after 30 seconds; at most 1024 pending A2S peers are retained. This is a
+state bound, not a request-rate limit.
 Without a loaded BSP, A2S_INFO reports `de_dust2`; with `GOLDSRC_MAP_BSP`, it
 reports the validated map filename stem after static BSP/spawn/objective parsing.
 World simulation and client sign-on remain disabled.

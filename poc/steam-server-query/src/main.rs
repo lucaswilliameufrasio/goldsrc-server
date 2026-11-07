@@ -9,6 +9,7 @@ mod connection;
 mod fragments;
 #[cfg(feature = "steam-auth")]
 mod netchannel;
+mod query;
 #[cfg(any(test, feature = "steam-auth"))]
 #[allow(dead_code)]
 mod resources;
@@ -22,6 +23,9 @@ mod steam;
 use connection::Connections;
 #[cfg(feature = "packet-trace")]
 use connection::{CHALLENGE_REQUEST as GAME_CHALLENGE_REQUEST, CONNECT_PREFIX};
+#[cfg(feature = "packet-trace")]
+use query::QUERY_PREFIX;
+use query::QueryChallenges;
 
 #[cfg(feature = "packet-trace")]
 use std::fs::OpenOptions;
@@ -34,9 +38,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:27025";
 const DEFAULT_QUERY_MAP: &str = "de_dust2";
-const QUERY_PREFIX: &[u8] = b"\xff\xff\xff\xffTSource Engine Query\0";
 const PROTOCOL_VERSION: u8 = 48;
-const CHALLENGE: i32 = 0x4353_3136;
 
 fn main() -> std::io::Result<()> {
     shutdown::install()?;
@@ -157,6 +159,7 @@ fn main() -> std::io::Result<()> {
     // Hold a full UDP datagram: do not interpret a truncated packet as valid.
     let mut packet = [0_u8; 65535];
     let mut connections = Connections::new();
+    let mut query_challenges = QueryChallenges::new();
     #[cfg(feature = "steam-auth")]
     let mut sessions = netchannel::Sessions::new();
     #[cfg(feature = "steam-auth")]
@@ -344,7 +347,12 @@ fn main() -> std::io::Result<()> {
                     }
                     reply.packet
                 } else {
-                    response_for(&packet[..packet_length], &query_info_response)
+                    query_challenges.handle(
+                        &packet[..packet_length],
+                        peer,
+                        Instant::now(),
+                        &query_info_response,
+                    )?
                 };
                 if let Some(response) = response {
                     let sent = socket.send_to(&response, peer)?;
@@ -550,35 +558,6 @@ fn is_tailscale_ipv4(address: Ipv4Addr) -> bool {
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
-fn response_for(packet: &[u8], info_response: &[u8]) -> Option<Vec<u8>> {
-    if packet == QUERY_PREFIX {
-        return Some(encode_challenge());
-    }
-
-    let challenge_start = QUERY_PREFIX.len();
-    if packet.len() != challenge_start + std::mem::size_of::<i32>()
-        || !packet.starts_with(QUERY_PREFIX)
-    {
-        return None;
-    }
-
-    let challenge_bytes: [u8; 4] = packet[challenge_start..].try_into().ok()?;
-    let challenge = i32::from_le_bytes(challenge_bytes);
-    if challenge != CHALLENGE {
-        return None;
-    }
-
-    Some(info_response.to_vec())
-}
-
-fn encode_challenge() -> Vec<u8> {
-    let mut response = Vec::with_capacity(9);
-    response.extend_from_slice(&[0xff; 4]);
-    response.push(b'A');
-    response.extend_from_slice(&CHALLENGE.to_le_bytes());
-    response
-}
-
 fn encode_info_response(map_name: &str) -> Vec<u8> {
     let mut response = Vec::with_capacity(128);
     response.extend_from_slice(&[0xff; 4]);
@@ -625,45 +604,21 @@ fn push_c_string(output: &mut Vec<u8>, value: &str) {
 mod tests {
     use std::net::SocketAddr;
     use std::path::Path;
+    use std::time::Instant;
+
+    use crate::query::QueryChallenges;
 
     use super::{
-        CHALLENGE, DEFAULT_LISTEN_ADDRESS, DEFAULT_QUERY_MAP, QUERY_PREFIX, encode_info_response,
-        parse_listen_address, query_map_name, response_for,
+        DEFAULT_LISTEN_ADDRESS, DEFAULT_QUERY_MAP, encode_info_response, parse_listen_address,
+        query_map_name,
     };
-
-    #[test]
-    fn should_issue_challenge_for_steam_query() {
-        let response = response_for(QUERY_PREFIX, &encode_info_response(DEFAULT_QUERY_MAP))
-            .expect("query should receive a challenge");
-
-        assert_eq!(&response[..5], &[0xff, 0xff, 0xff, 0xff, b'A']);
-        assert_eq!(&response[5..], &CHALLENGE.to_le_bytes());
-    }
-
-    #[test]
-    fn should_return_server_info_for_valid_challenge() {
-        let mut request = QUERY_PREFIX.to_vec();
-        request.extend_from_slice(&CHALLENGE.to_le_bytes());
-        let info_response = encode_info_response(DEFAULT_QUERY_MAP);
-
-        let response =
-            response_for(&request, &info_response).expect("valid challenge should receive info");
-
-        assert_eq!(response, info_response);
-        assert_eq!(&response[..6], &[0xff, 0xff, 0xff, 0xff, b'I', 48]);
-    }
 
     #[test]
     fn query_info_can_advertise_a_loaded_map_name() {
         let map_name = "de_dust2_2x2";
-        let mut request = QUERY_PREFIX.to_vec();
-        request.extend_from_slice(&CHALLENGE.to_le_bytes());
-        let info_response = encode_info_response(map_name);
+        let response = encode_info_response(map_name);
 
-        let response = response_for(&request, &info_response)
-            .expect("valid challenge should receive the configured map info");
-
-        assert_eq!(response, info_response);
+        assert_eq!(&response[..6], b"\xff\xff\xff\xffI\x30");
         assert!(
             response
                 .windows(map_name.len())
@@ -672,17 +627,11 @@ mod tests {
     }
 
     #[test]
-    fn should_ignore_invalid_or_malformed_queries() {
-        let mut request = QUERY_PREFIX.to_vec();
-        request.extend_from_slice(&0_i32.to_le_bytes());
-        let info_response = encode_info_response(DEFAULT_QUERY_MAP);
-
-        assert!(response_for(&request, &info_response).is_none());
-        assert!(response_for(b"not a Steam query", &info_response).is_none());
-    }
-
-    #[test]
     fn should_ignore_unsupported_or_malformed_game_challenges() {
+        let mut challenges = QueryChallenges::new();
+        let peer = SocketAddr::from(([127, 0, 0, 1], 27015));
+        let now = Instant::now();
+        let info_response = encode_info_response(DEFAULT_QUERY_MAP);
         for request in [
             b"getchallenge steam\n".as_slice(),
             b"\xff\xff\xff\xffgetchallenge\n".as_slice(),
@@ -690,7 +639,12 @@ mod tests {
             b"\xff\xff\xff\xffgetchallenge steam\nconnect x".as_slice(),
             b"\xff\xff\xff\xffgetchallenge steam\n\0secret".as_slice(),
         ] {
-            assert!(response_for(request, &encode_info_response(DEFAULT_QUERY_MAP)).is_none());
+            assert!(
+                challenges
+                    .handle(request, peer, now, &info_response)
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 
