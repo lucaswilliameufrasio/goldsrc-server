@@ -12,11 +12,25 @@ the query PoC as proof of game-connection compatibility.
 | Official Steam CS 1.6 client | Steam app ID `10`; the target is the unmodified official client. | Steam `BuildID`, platform/OS, branch, GoldSrc executable version/build, and protocol reported by the installed client. | Not installed/found in the inspected local Steam paths; exact build unconfirmed. |
 | GoldSrc game connection | Reference HLDS reports protocol `48`, `1.1.2.7/Stdio`, build `10211`; historical version mappings are not evidence of the current Steam client's executable build. | Confirm the official client's reported protocol/build and observe negotiation behavior. | HLDS baseline observed; official-client build/protocol remains unconfirmed. |
 | Valve HLDS reference | SteamCMD App ID `90`, app `BuildID` `15961496`; `cstrike/steam.inf` says `PatchVersion=1.1.2.7`. The executable reports protocol `48`, `1.1.2.7/Stdio (cstrike)`, build `10211` (`2024-10-08 01:34:04`). | Obtain sanitized client movement/gameplay evidence. | Acquired anonymously from Valve. A pinned amd64 HLDS container answered sanitized A2S_INFO for stock `de_dust2` and both selected local maps; query evidence does not establish gameplay. Raw packet capture is intentionally not collected. |
-| Steam server query | The query PoC encodes A2S_INFO protocol byte `48` (`poc/steam-server-query/src/main.rs`). | Compare the Rust PoC's response with reference HLDS, if/when needed. | Sanitized A2S_INFO was observed from the pinned HLDS container: Source response, protocol `48`, `cstrike`, `Counter-Strike`, 0/6 players, `1.1.2.7/Stdio`; successful query only. |
+| Steam server query | The Rust PoC and pinned HLDS both return Source-format A2S_INFO with protocol byte `48`. | Confirm behavior with the official Steam browser when the client is available; do not infer game-connection compatibility from query results. | Sanitized responses from both servers are recorded below. They differ in challenge behavior, `max_players`, and version; no official browser test was run. |
 
 The A2S_INFO response's protocol byte and the GoldSrc game-connection protocol
 must be tracked separately. A matching query response does not establish a
 successful client connection, Steam authentication, sign-on, or gameplay.
+
+### Query comparison (2026-11-07)
+
+The same allowlisted query summarizer was used against the Rust PoC on loopback
+and the pinned HLDS container:
+
+| Endpoint | Response | Challenge | Request/response lengths | Other sanitized fields |
+| --- | --- | --- | --- | --- |
+| Rust query PoC (`127.0.0.1:27025`, loopback-only) | Source A2S_INFO; protocol `48` | Two-step challenge | `25/9`, then `29/75` bytes | `de_dust2`, `cstrike`, `Counter-Strike`, 0/32 players, version `0.1.0` |
+| HLDS (`127.0.0.1:27015`, isolated container) | Source A2S_INFO; protocol `48` | Direct info response | `25/107` bytes | `de_dust2`, `cstrike`, `Counter-Strike`, 0/6 players, version `1.1.2.7/Stdio` |
+
+The query protocol/response type and map/game fields agree; the query challenge,
+player limit, and version are not identical. This is a sanitized query-level
+comparison only, not official-browser validation or proof of game sign-on.
 
 ### Evidence sources
 

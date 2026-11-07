@@ -351,6 +351,12 @@ it to the public internet.
   and no published ports. Containers are stopped. Only sanitized summaries and
   boolean bind checks were retained; no raw logs or packets were retained. This
   proves HLDS map loading/query only, not client sign-on or gameplay.
+  The Rust PoC was then queried on its loopback default using the same helper.
+  It returned Source A2S_INFO, protocol `48`, `de_dust2`, `cstrike`,
+  `Counter-Strike`, players `0/32`, version `0.1.0`, with the expected two-step
+  challenge (`25/9`, then `29/75` bytes). HLDS answers directly (`25/107` for
+  stock `de_dust2`) and reports `0/6` plus its own version. This characterizes a
+  local query difference; the official Steam browser has not been tested.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
