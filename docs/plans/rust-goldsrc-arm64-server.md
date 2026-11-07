@@ -66,8 +66,9 @@ through an idempotent persistence boundary so restarts do not lose results.
 loopback and permits an explicitly selected private LAN or Tailscale IP for
 browser testing. It validates a small piece of Steam server-browser
 interoperability without pretending to implement the GoldSrc game connection
-protocol. Its challenge value is fixed for deterministic testing; do not expose
-it to the public internet.
+protocol. Its A2S challenge is OS-random, bound to the requesting UDP endpoint,
+and retained in bounded volatile state for 30 seconds. This is not a measured
+rate limit or production capacity; do not expose the PoC to the public internet.
 
 ## Current progress (2026-10-29)
 
@@ -508,7 +509,17 @@ ARM64 execution remains unverified. See the updated
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
   and measured load tests on ARM64 hardware. Game and A2S challenge state is
   bounded but has no per-peer request-rate control; these are development caps,
-  not measured production capacity. The local `cargo zigbuild` artifact
+  not measured production capacity. A native-host x86-64 GNU release build of
+  all targets/features passed on 2026-11-07 (SHA-256
+  `a7e95f378836df179eb4a4997cfc35aa3124dd0773b6593840d19a47da1bf94b`). That
+  artifact imports through `GLIBC_2.34` (an artifact minimum, not a confirmed
+  deployment baseline). It completed loopback A2S challenge/INFO exchanges with
+  the default map and each selected local BSP; responses reported `de_dust2`
+  (75 bytes), `de_dust2_2x2` (79 bytes), and `fy_pool_day` (78 bytes). Both BSP
+  runs also logged parsed spawn/objective metadata before listening. These verify
+  native x86-64 startup/query and static map preparation only, not client
+  sign-on, gameplay, a deployment ABI, or production load. The local
+  `cargo zigbuild` artifact
   imports through GLIBC 2.17 and passed the emulated Bookworm smoke above, but
   the deployment release/baseline and native ARM64 runtime validation remain
   unverified. The workstation has no route to the target host and Buildx reports
