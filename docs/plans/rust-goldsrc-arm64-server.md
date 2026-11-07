@@ -511,7 +511,7 @@ ARM64 execution remains unverified. See the updated
   bounded but has no per-peer request-rate control; these are development caps,
   not measured production capacity. A native-host x86-64 GNU release build of
   all targets/features passed on 2026-11-07 (SHA-256
-  `a7e95f378836df179eb4a4997cfc35aa3124dd0773b6593840d19a47da1bf94b`). That
+  `a71c81618bbf3120844e562153007703defe2c881c4178a352c6815d7de143ce`). That
   artifact imports through `GLIBC_2.34` (an artifact minimum, not a confirmed
   deployment baseline). It completed loopback A2S challenge/INFO exchanges with
   the default map and each selected local BSP; responses reported `de_dust2`
