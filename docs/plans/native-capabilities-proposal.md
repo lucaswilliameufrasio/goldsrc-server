@@ -18,8 +18,10 @@ rescue). Preserve the stock CS 1.6 rules and defaults; do not choose a 5v5
 tournament format, custom round limit, buy rules, or a community mod without
 confirmation.
 
-Keep the first playable target to one user-supplied local map and one objective
-path. The local map inventory contains nine BSPs: `35hp_2`, `aim_headshot`,
+The owner selected two user-supplied local maps for the initial validation
+scope: `de_dust2_2x2` and `fy_pool_day` (“options 1 and 2”, 2026-11-07). Both
+exercise the bomb-defusal objective path. The local map inventory contains nine
+BSPs: `35hp_2`, `aim_headshot`,
 `aim_map`, `awp_india`, `cs_deathmatch-final`, `cs_deathmatch_2005c`,
 `de_dust2_2x2`, `fy_pool_day`, and `fy_snow`. A bounded BSP v30 entity-lump
 inspection found these objective candidates:
@@ -31,19 +33,23 @@ inspection found these objective candidates:
 - `cs_deathmatch-final`: two `hostage_entity` and two `info_hostage_rescue`
   entities, plus both spawn entity types.
 
-These are entity-presence observations only; they do not prove a map loads or
-plays correctly. `de_dust2_2x2` is the strongest bomb-defusal candidate from this
-inventory and is also listed in the source project's `files/mapcycle.txt`, but
-no map/objective has been selected yet. Do not silently substitute the reference
-HLDS fixture map as production content. The BSPs remain in the companion
-checkout; do not copy, package, or redistribute them.
+Entity presence alone does not prove a map loads or plays correctly.
+`de_dust2_2x2` and `fy_pool_day` are both listed in the source project's
+`files/mapcycle.txt`; the owner selected these two maps without authorizing BSP
+copying, packaging, or redistribution. An isolated HLDS check later confirmed
+both selected map names in sanitized A2S_INFO responses after startup. This
+proves map-load/query behavior only, not objective completion or a playable
+round. `cs_deathmatch-final` remains an entity/parser candidate only. Do not
+silently substitute the reference HLDS fixture map as production content; all
+BSPs remain in the companion checkout.
 
 An opt-in test using the Rust `load_world` parser was run against all nine local
 BSPs. It returned successfully for eight; `35hp_2` failed strict geometry
 validation. The three candidates above parsed, exposed non-empty collision
-geometry, and matched the listed objective/spawn entity counts. This is parser
-evidence only, not a successful HLDS load or playable round. Re-run without
-copying the assets with:
+geometry, and matched the listed objective/spawn entity counts. The selected
+two maps also loaded in isolated HLDS, but neither parser nor query evidence
+proves the bomb objective, round transitions, or player gameplay. Re-run the
+Rust parser check without copying assets with:
 
 ```sh
 GOLDSRC_COMPANION_MAPS_DIR=/path/to/local/maps \
@@ -68,8 +74,10 @@ replacements.
 
 ## Inputs needed before closing this proposal
 
-- Owner confirmation of the first map/objective candidate; maps remain local to
-  the companion checkout and are not copied into this repository.
+- Official-client validation of objective completion and gameplay on both
+  selected maps. HLDS map-load/A2S query checks passed, but no client joined and
+  no playable round was observed. Maps remain local to the companion checkout
+  and are not copied into this repository.
 - A deployment-specific plugin inventory, if the running server enables plugins
   not present in the tracked `plugins.ini`; do not share secret-bearing config.
 - Admin authentication/roles and ban policy before operating those controls.

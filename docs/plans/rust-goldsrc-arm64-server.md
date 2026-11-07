@@ -48,9 +48,10 @@ through an idempotent persistence boundary so restarts do not lose results.
 3. **Connection vertical slice** — implement connectionless challenge,
    Steam authentication, sign-on, disconnect, and a single client join using
    the unmodified Steam client. Test only against local clients and fixtures.
-4. **Playable slice** — load one user-supplied, licensed map; spawn and move
-   players; implement the selected mode's round/weapon loop; verify client
-   prediction and server authority with stock clients.
+4. **Playable slice** — load the two owner-selected local maps
+   (`de_dust2_2x2` and `fy_pool_day`); spawn and move players; implement the
+   stock bomb-defusal round/weapon loop; verify client prediction and server
+   authority with stock clients.
 5. **Native operations** — implement admin authentication and actions, health
    and Prometheus metrics, event-driven ranking, bans, persistence, and
    recovery without AMX/Metamod.
@@ -335,22 +336,36 @@ it to the public internet.
   response. An isolated retry with the local HLDS image (`--network none`, LAN
   mode, no master server) found the process bound to UDP 27015 but still received
   no query response after startup; a loopback UDP self-test in that image passed.
-  No logs or packet data were retained. Live HLDS/client evidence remains pending.
+  A second isolated attempt used the pinned `hldsdocker/cstrike` `steam_legacy`
+  amd64 image (`sha256:484f7c3c433099e55f87c0c7a56b52511a98615fa2a07265fa4264cf3cf7ccc6`),
+  `hlds_run`, explicit loopback `+ip 127.0.0.1`, `--network none`, and no published
+  ports. The pinned Python helper (`sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4`)
+  shared only that network namespace. Invocations with extra startup flags bound
+  to loopback but timed out; the image's minimal documented startup style then
+  returned sanitized A2S_INFO for stock `de_dust2` and both selected local maps.
+  The responses were Source type, protocol `48`, game directory `cstrike`, game
+  `Counter-Strike`, players `0/6`, version `1.1.2.7/Stdio`, and request/response
+  lengths `25/107`, `25/111`, and `25/110` bytes respectively. The two custom
+  BSPs were mounted read-only from the companion checkout; no map assets were
+  copied. Bind checks confirmed loopback only; Docker reported network `none`
+  and no published ports. Containers are stopped. Only sanitized summaries and
+  boolean bind checks were retained; no raw logs or packets were retained. This
+  proves HLDS map loading/query only, not client sign-on or gameplay.
 
-The compatibility inventory has been started in
-[`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
-is confirmed by the locally acquired HLDS executable (App BuildID `15961496`,
-CS executable build `10211`); the official client build remains unknown. HLDS
-did not stay healthy enough in this container to produce a query summary, and
-no sanitized client/HLDS movement evidence exists yet. The opt-in Steam adapter
+The compatibility inventory in
+[`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
+observed HLDS baseline: protocol 48, App BuildID `15961496`, and CS executable
+build `10211`. The official client build remains unknown. The pinned HLDS
+container produced the query summaries above, but no sanitized client/HLDS
+movement evidence exists yet. The opt-in Steam adapter
 has received positive approval and verified the initial acceptance/netchannel
 boundary with the official client. Next: implement serverinfo, resource
 negotiation and the rest of sign-on, without enabling any partial plan before
 its inputs and official-client behavior are verified.
 The owner confirmed the intended SDK/App ID 10 use and selected no public
 announcement; `SetAdvertiseServerActive(false)` remains in force. Client build
-identification and a healthy reference-HLDS query/movement capture remain open
-evidence gaps; do not treat local synthetic tests as those fixtures. The
+identification and client/HLDS movement capture remain open evidence gaps; do
+not treat local synthetic tests as those fixtures. The
 [sanitized capture playbook](../compatibility/capture-playbook.md) avoids raw
 packet captures and identity-bearing output.
 
@@ -365,21 +380,20 @@ ARM64 execution remains unverified. See the updated
 
 ## Open validation items
 
-- Confirm the precise official Steam client build/protocol and obtain a
-  sanitized query summary from a healthy reference HLDS.
+- Confirm the precise official Steam client build/protocol and collect sanitized
+  client/HLDS movement evidence using the [capture playbook](../compatibility/capture-playbook.md).
+  Do not create/share raw PCAPs or identity-bearing traces; the isolated HLDS
+  query summary is already recorded above.
 - Keep the owner-authorized Steam SDK use private and `SetAdvertiseServerActive`
   disabled. Public listing is explicitly out of scope; no master-server or
   browser-visibility test is required.
-- Obtain sanitized client/HLDS version and movement evidence using the
-  [capture playbook](../compatibility/capture-playbook.md); do not create/share
-  raw PCAPs or identity-bearing traces.
 - Implement the accepted stock-CS first playable mode from
   [`stock-cs16-first-playable.md`](../decisions/stock-cs16-first-playable.md).
   The tracked companion `plugins.ini` has no active `.amxx` entries, but its
   running deployment may differ; no plugin-specific replacement is established.
-- Confirm the initial map/objective choice from the local inventory in
-  [`native-capabilities-proposal.md`](native-capabilities-proposal.md). Map BSPs
-  are outside this checkout and remain local; no copy or packaging is needed.
+- Implement and validate the owner-selected `de_dust2_2x2` and `fy_pool_day`
+  bomb-defusal paths. Their map BSPs are outside this checkout and remain local;
+  HLDS loading/A2S passed, but live objective gameplay remains unverified.
 - Implement a native world/session producer that binds validated map state and
   verified sign-on inputs to the currently approved Steam session; keep admission
   fail-closed until this is ready.
@@ -399,7 +413,25 @@ ARM64 execution remains unverified. See the updated
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
   and measured load tests on ARM64 hardware. The local `cargo zigbuild` artifact
   imports through GLIBC 2.17, but the deployment release/baseline and native
-  ARM64 runtime validation still require a resolvable authorized SSH target.
+  ARM64 runtime validation remain unverified. The workstation has no route to
+  the target host and Buildx reports no ARM64/QEMU execution platform. If direct
+  connectivity is unavailable, transfer the existing artifact through an
+  owner-controlled channel to the separate authorized ARM64 test host, then run
+  this read-only smoke check there (do not use `oraclepersonalarm`):
+
+  ```sh
+  uname -m
+  . /etc/os-release
+  printf 'os=%s version=%s\n' "$ID" "$VERSION_ID"
+  getconf GNU_LIBC_VERSION
+  sha256sum ./steam-server-query-poc
+  env -i PATH=/usr/bin:/bin ./steam-server-query-poc
+  ```
+
+  The program binds only to `127.0.0.1:27025` by default and has no Steam or
+  advertising configuration unless explicitly supplied. Stop it with Ctrl-C;
+  return only architecture, OS/version, GLIBC, SHA-256, and whether the
+  loopback-start message appeared. Do not send full environment dumps or logs.
 
 ## References
 

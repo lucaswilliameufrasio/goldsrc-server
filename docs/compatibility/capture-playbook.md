@@ -69,6 +69,56 @@ player names, IDs, and raw bytes. If the HLDS does not stay healthy enough to
 answer, record that as a failed attempt; do not report the Rust query PoC as an
 HLDS reference result.
 
+### Optional: isolated Docker HLDS
+
+The following pinned amd64 image was verified with the query helper. Use an
+already verified rootless Docker context (replace `rootless` if your context has
+another name). The image's default command binds `0.0.0.0`, so override it as
+shown; do not publish ports. For a selected local map, bind-mount only that BSP
+read-only from its existing checkout. Do not copy the BSP into this repository
+or into a derived image.
+
+```sh
+MAP_DIR=/path/to/the/local/maps
+MAP=de_dust2_2x2 # or fy_pool_day
+case "$MAP" in
+  de_dust2_2x2|fy_pool_day)
+    :
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+CONTAINER=cs16-hlds-query
+MAP_BSP="$MAP_DIR/$MAP.bsp"
+test -r "$MAP_BSP" || exit 2
+
+docker --context rootless run --detach --rm \
+  --name "$CONTAINER" --network none --cpus 2 --memory 1g \
+  --pids-limit 256 --ulimit core=0 --stop-timeout 10 \
+  --volume "$MAP_BSP:/home/hlds_user/hlds/cstrike/maps/$MAP.bsp:ro" \
+  --entrypoint /bin/bash --workdir /home/hlds_user/hlds \
+  hldsdocker/cstrike@sha256:484f7c3c433099e55f87c0c7a56b52511a98615fa2a07265fa4264cf3cf7ccc6 \
+  -c "exec ./hlds_run -game cstrike +ip 127.0.0.1 +sv_lan 1 +map $MAP"
+
+docker --context rootless inspect --format \
+  'network={{.HostConfig.NetworkMode}} ports={{json .NetworkSettings.Ports}}' \
+  "$CONTAINER"
+docker --context rootless run --rm \
+  --network "container:$CONTAINER" --read-only \
+  --volume "$PWD/poc/steam-server-query/examples/hlds_query_summary.py:/hlds_query_summary.py:ro" \
+  --entrypoint python3 \
+  python@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4 \
+  /hlds_query_summary.py 127.0.0.1 --port 27015 --timeout 2.0
+
+docker --context rootless stop --time 5 "$CONTAINER"
+```
+
+The helper shares only the isolated container's network namespace and prints
+allowlisted query fields. If the first query occurs during startup, retry after
+a short delay. Stop the server when done; keep only the sanitized summary. Do
+not retain or share logs or packet dumps; neither is needed.
+
 ## 3. Capture one movement vector at the HLDS simulation boundary
 
 This uses GDB's typed view of the local reference process, not a network capture.

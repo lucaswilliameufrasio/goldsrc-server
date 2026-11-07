@@ -15,9 +15,12 @@ competitive mode.
 The first playable slice targets stock Counter-Strike 1.6 behavior with no
 custom plugin-driven mode or tournament rules. The map's stock entities define
 the objective path (for example, bomb defusal or hostage rescue). Implement and
-validate one locally supplied map/objective path first; the map itself remains
-unselected pending the owner's choice from the local inventory in
-[`native-capabilities-proposal.md`](../plans/native-capabilities-proposal.md).
+validate the locally supplied maps selected by the owner: `de_dust2_2x2` and
+`fy_pool_day`. The owner selected both on 2026-11-07 (“options 1 and 2”),
+superseding the earlier one-map-only validation boundary. Both are bomb-defusal
+targets and passed an isolated HLDS map-load/query check on 2026-11-07; neither
+has passed official-client round/gameplay validation. Their BSPs remain in the
+companion checkout and must not be copied, packaged, or redistributed.
 
 Use local Valve HLDS and an unmodified Steam CS 1.6 client as behavioral
 references. Do not invent round/buy settings or custom rules to fill evidence
@@ -37,7 +40,7 @@ redistribution.
 
 ## Consequences
 
-- The first proof must cover stock team selection, spawn, the selected map's
+- The first proof must cover stock team selection, spawn, both selected maps'
   objective entities, round transitions, player movement, and the relevant
   weapons/damage behavior.
 - Exact stock defaults must be measured against the chosen reference HLDS; this
