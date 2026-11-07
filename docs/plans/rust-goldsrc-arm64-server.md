@@ -382,6 +382,13 @@ it to the public internet.
   queue or background worker, so there is no queued work to drain; diagnostic
   sessions are volatile and are not resumable. This is not yet a production
   server shutdown contract for live players or durable operations.
+- **Current-revision fixture regression (2026-11-07):** after the shutdown
+  change, the available opt-in HLDS references passed again: 9 library tests
+  covering map/CRC/hull/delta behavior and 12 binary tests covering resources,
+  serverinfo, sign-on assembly and netchannel sequencing. The local selected-map
+  inventory test also passed (eight parser successes; only `35hp_2` failed its
+  strict geometry gate), as did the normal default/all-feature suites. These
+  remain offline reference checks, not client sign-on or gameplay evidence.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
@@ -411,10 +418,12 @@ ARM64 execution remains unverified. See the updated
 
 ## Open validation items
 
-- Confirm the precise official Steam client build/protocol and collect sanitized
-  client/HLDS movement evidence using the [capture playbook](../compatibility/capture-playbook.md).
-  Do not create/share raw PCAPs or identity-bearing traces; the isolated HLDS
-  query summary is already recorded above.
+- **Blocked on the official client:** it is not installed in the inspected local
+  Steam paths. Provide an owner-controlled local client path or run the sanitized
+  [capture playbook](../compatibility/capture-playbook.md) and return its
+  allowlisted client build/protocol and movement fields. Do not create/share raw
+  PCAPs or identity-bearing traces; the isolated HLDS query summary is already
+  recorded above.
 - Keep the owner-authorized Steam SDK use private and `SetAdvertiseServerActive`
   disabled. Public listing is explicitly out of scope; no master-server or
   browser-visibility test is required.
@@ -439,7 +448,9 @@ ARM64 execution remains unverified. See the updated
   no complete movement tick or live world is active.
 - Implement native operations replacing required plugins (administration,
   health/metrics, bans, ranking/history and persistence) and verify failure and
-  restart behavior.
+  restart behavior. The inspected companion `plugins.ini` has no active plugin
+  entries; the running deployment inventory and exact required operations are
+  not established, so do not invent plugin replacements or admin/data contracts.
 - Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
   and measured load tests on ARM64 hardware. The local `cargo zigbuild` artifact
