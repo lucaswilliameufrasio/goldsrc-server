@@ -2,7 +2,7 @@
 
 Status: server logon, invalid-ticket rejection and positive official-client
 approval verified on x86-64. Sign-on/admission remain unimplemented.
-References checked 2026-10-29.
+References checked 2026-10-29 and 2026-11-07.
 
 ## Runtime and anonymous-logon evidence
 
@@ -91,6 +91,39 @@ as part of the initial static inspection itself.
   Steamworks. At initial investigation this session had no authenticated access or owner confirmation
   of applicable SDK permissions. Do not accept agreements for the owner, copy
   SDKs from arbitrary mirrors, or request personal passwords.
+
+## Master-server listing and SDK terms (2026-11-07)
+
+The current official
+[ISteamGameServer API reference](https://partner.steamgames.com/doc/api/ISteamGameServer)
+documents `LogOnAnonymous` and the master-server heartbeat control
+`EnableHeartbeats`; the API also exposes server-advertising controls. This
+confirms that the supported SDK has a technical server-logon/listing path. It
+does **not** establish that App ID 10 will accept this independent server, that
+the server will appear in the CS 1.6 browser, or that this project's use is
+permitted. The current Rust adapter keeps advertising disabled via
+`SetAdvertiseServerActive(false)`; no heartbeat or public-listing test was run.
+
+Valve's [dedicated-server distribution guidance](https://partner.steamgames.com/doc/sdk/uploading/distributing_gs)
+describes publishing a dedicated server as a Steamworks `TOOL` app, enabling
+dedicated-server redistributables, and associating it with the base game's App
+ID. That is a distribution workflow, not evidence that this project has an
+eligible App ID or should be distributed through Steam.
+
+The public [SDK Access Agreement](https://partner.steamgames.com/documentation/sdk_access_agreement)
+grants a licensee local SDK use to develop its software and distribution of
+`redistributable_bin` components with that software; it also restricts reverse
+engineering and requires Steamworks-service communication through the SDK API.
+This summary is not legal advice and does not decide whether the owner's SDK
+agreement covers this independent implementation or App ID 10 usage. The owner
+must confirm that scope, and seek Valve clarification if it is ambiguous, before
+distribution or enabling master-server advertising.
+
+**Status:** legacy player-ticket approval is technically verified with one
+official client on x86-64, and official SDK documentation describes the listing
+mechanism. Native ARM64 auth, App ID 10 listing eligibility, actual browser
+appearance, and owner permission remain unverified. Keep advertising disabled
+until those gates are explicitly cleared.
 
 ## Prerequisite owned by the project owner
 

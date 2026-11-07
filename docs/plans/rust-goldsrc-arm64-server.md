@@ -303,12 +303,23 @@ Applicable permissions remain the owner's responsibility. Client build
 identification and reference fixtures remain open evidence
 gaps; do not treat local synthetic tests as those fixtures.
 
+The official Steamworks API documents anonymous game-server logon and
+master-server heartbeat controls, while the local Rust adapter keeps advertising
+disabled. The existing x86-64 positive legacy-ticket test establishes technical
+authentication for that client/runtime only. App ID 10 listing eligibility,
+actual public-browser visibility, SDK/App ID permissions, and ARM64 execution
+remain unverified; see the updated
+[Steam investigation](../compatibility/steam-authentication.md).
+
 ## Open validation items
 
 - Confirm the precise official Steam client build/protocol and obtain a working
   reference-HLDS query capture.
-- Verify whether Steam game-server authentication and master-server listing
-  can be implemented and tested by this project, and under what SDK terms.
+- Confirm owner/Valve permission for SDK use with App ID 10. The official API
+  documents server logon and heartbeat controls, but App ID 10 listing
+  eligibility and actual public-browser visibility have not been tested; keep
+  advertising disabled until permission and an isolated listing test are
+  approved.
 - Obtain and review local connection/sign-on fixtures from an unmodified official
   client and a local reference HLDS server.
 - Decide the first gameplay mode and the exact set of native features replacing
