@@ -308,7 +308,7 @@ it to the public internet.
   `GLIBC_2.34`; this implies a glibc 2.34 minimum for that GCC-linked artifact,
   not a confirmed deployment baseline. The separate Zig-linked artifact below
   targets a lower symbol floor. The actual Debian/Ubuntu target release and
-  native ARM64 runtime remain unknown; no ARM64 execution was performed.
+  native ARM64 runtime remain unknown; no native ARM64 execution was performed.
 - **Pinned Zig cross-build (2026-11-07):** installed Zig 0.17.1 locally after
   verifying the x86-64 Linux archive against the SHA-256 published in Zig's
   official download index (`3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a`);
@@ -327,7 +327,7 @@ it to the public internet.
   The 2.17 symbol floor was selected provisionally, not from a confirmed host
   baseline. The owner identifies the intended host as ARM64, but the authorized
   read-only SSH probe failed at name resolution, so its OS release and GLIBC
-  remain unverified; the ARM64 binary was not executed.
+  remain unverified; native execution was not performed.
 - **Sanitized compatibility capture tooling (2026-11-07):** added a playbook for
   client/HLDS version metadata, query summaries, and server-side movement vectors
   without raw packet files, plus a standard-library A2S_INFO summarizer that
@@ -357,6 +357,19 @@ it to the public internet.
   challenge (`25/9`, then `29/75` bytes). HLDS answers directly (`25/107` for
   stock `de_dust2`) and reports `0/6` plus its own version. This characterizes a
   local query difference; the official Steam browser has not been tested.
+- **ARM64 user-mode emulation smoke (2026-11-07):** Buildx exposes only amd64
+  platforms here, so no binfmt or Docker configuration was changed. Instead,
+  `qemu-aarch64-static` (Debian package `1:7.2+dfsg-7+deb12u18`) ran the
+  cross-built ELF against a separately exported, pinned Debian Bookworm arm64
+  rootfs (`debian@sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a`).
+  The target loader reports `GLIBC 2.36`. With the rootfs and ELF mounted
+  read-only, Docker `network none`, no published ports, and the program bound to
+  `127.0.0.1:27025`, the sanitized query helper received the expected Source
+  A2S_INFO challenge and response: protocol `48`, `de_dust2`, `cstrike`,
+  `Counter-Strike`, 0/32 players, version `0.1.0`, response lengths `9/75`.
+  This verifies startup and query behavior under AArch64 user-mode emulation on
+  glibc 2.36 only; it is not native ARM64 execution, target-host baseline proof,
+  or a performance measurement. The emulation container was stopped.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
@@ -418,9 +431,11 @@ ARM64 execution remains unverified. See the updated
 - Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
   and measured load tests on ARM64 hardware. The local `cargo zigbuild` artifact
-  imports through GLIBC 2.17, but the deployment release/baseline and native
-  ARM64 runtime validation remain unverified. The workstation has no route to
-  the target host and Buildx reports no ARM64/QEMU execution platform. If direct
+  imports through GLIBC 2.17 and passed the emulated Bookworm smoke above, but
+  the deployment release/baseline and native ARM64 runtime validation remain
+  unverified. The workstation has no route to the target host and Buildx reports
+  no ARM64/QEMU execution platform (the explicit user-mode run above is not a
+  registered Buildx platform). If direct
   connectivity is unavailable, transfer the existing artifact through an
   owner-controlled channel to the separate authorized ARM64 test host, then run
   this read-only smoke check there (do not use `oraclepersonalarm`):
