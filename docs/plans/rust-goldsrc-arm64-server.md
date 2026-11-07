@@ -249,10 +249,45 @@ it to the public internet.
 - **Remaining gameplay foundation:** player movement and world/entity movement
   are not implemented. The API is static and handles translation only; official
   client sign-on remains intentionally disabled.
-- **Next implementation slice:** establish the mode-independent player movement
-  contract and implement one bounded movement tick against this verified world
-  trace. Do not connect it to sign-on or claim gameplay before the client's
-  movement inputs and resulting state have been checked against HLDS.
+
+### Progress (2026-11-07): collision-only movement primitive
+
+- **Implemented:** `movement::slide_move` performs a bounded sweep/slide update
+  for one entity against the unrotated static world BSP with at most two sweeps.
+  It accepts origin, velocity, local bounds and frame duration; it returns the
+  resulting origin, velocity, impact count and all-solid status. It rejects
+  invalid state and propagates BSP trace failures. The primitive is not called
+  by the live server.
+- **Verified synthetically:** open movement, wall sliding with preserved tangent
+  velocity, a walkable floor impact, a wholly solid sweep, and malformed inputs
+  pass deterministic tests. This is collision-response evidence, not movement
+  parity or playable gameplay.
+- **Quality gate passed:** `cargo fmt --manifest-path
+  poc/steam-server-query/Cargo.toml -- --check`, `cargo clippy --manifest-path
+  poc/steam-server-query/Cargo.toml --all-targets --all-features -- -D warnings`,
+  `cargo build --manifest-path poc/steam-server-query/Cargo.toml`, and
+  `cargo test --manifest-path poc/steam-server-query/Cargo.toml --all-targets`
+  with and without `--all-features` all passed. Normal runs retain fixture-only
+  HLDS tests as ignored; the translated trace and movement tests were run
+  separately against their available local/synthetic inputs.
+- **Contract and exclusions:**
+  [`player-movement.md`](../compatibility/player-movement.md) records ownership
+  and failure behavior. Client command parsing, acceleration, gravity, friction,
+  ground/water state, jumping/ducking/stairs, entities and game rules remain
+  separate unfinished capabilities.
+- **Next required movement evidence:** establish the actual client command and
+  persistent player-state inputs from the official client/HLDS exchange, then
+  compare one bounded movement case against HLDS. Do not infer the game mode,
+  fabricate movevars or connect the primitive to live sign-on before that
+  evidence exists.
+- **Additional local sign-on fixture checks passed:** `assembled_message_matches_hlds`,
+  `serverinfo_uses_crc_from_local_bsp_and_session_slot`,
+  `prepared_sequence_with_local_world_inputs`,
+  `reference_manifest_fragments_reassemble_and_wait_for_consistency`, and
+  `prepared_signon_reassembles_via_fragment_channel` all passed with the local
+  HLDS 10211 fixtures. These validate offline message preparation and reliable
+  transfer sequencing only; no sign-on packet was sent to a client and no
+  official-client gameplay was verified.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
@@ -290,7 +325,8 @@ gaps; do not treat local synthetic tests as those fixtures.
 - Build a playable native slice: instantiate map entities, select/spawn players,
   apply the HLDS hull-origin offset, implement player movement and hull/entity
   collision, then add the chosen mode's weapons, rounds and game rules. Current
-  translated BSP traces are static; no movement tick or live world is active.
+  translated BSP traces and collision-only slide primitive are experimental;
+  no complete movement tick or live world is active.
 - Implement native operations replacing required plugins (administration,
   health/metrics, bans, ranking/history and persistence) and verify failure and
   restart behavior.
