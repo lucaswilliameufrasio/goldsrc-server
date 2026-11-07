@@ -42,13 +42,20 @@ fn main() -> std::io::Result<()> {
     let _prepared_map = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
         let (entities, crc, geometry) =
             steam_server_query_poc::map::load_world(std::path::Path::new(&path))?;
+        let spawns = steam_server_query_poc::spawns::extract_cs_spawn_entities(&entities)?;
+        let bomb_targets = steam_server_query_poc::objectives::extract_bomb_target_brushes(
+            &entities,
+            &geometry.models,
+        )?;
         eprintln!(
-            "Map loaded: {} entities, {} planes, {} models, CRC 0x{crc:08x}; world simulation and sign-on disabled",
+            "Map metadata prepared: {} entities, {} planes, {} models, {} CS spawn points, {} bomb-target brushes, CRC 0x{crc:08x}; world simulation and sign-on disabled",
             entities.len(),
             geometry.planes.len(),
-            geometry.models.len()
+            geometry.models.len(),
+            spawns.len(),
+            bomb_targets.len(),
         );
-        Some((entities, crc, geometry))
+        Some((entities, crc, geometry, spawns, bomb_targets))
     } else {
         None
     };

@@ -323,7 +323,7 @@ it to the public internet.
   `/lib/ld-linux-aarch64.so.1`, dynamic dependencies on `libc.so.6`,
   `libpthread.so.0`, and `libdl.so.2`, and imports through `GLIBC_2.17` only.
   Its SHA-256 is
-  `7d53d6fe4a03d9a322edd4cd96daf94be3298872ccd44060dcaf3c0b93a91b05`.
+  `1c839964ff7510d042b2e2e412a81c08e7b862e8b40b7422007faf7d3f4cab1b`.
   The 2.17 symbol floor was selected provisionally, not from a confirmed host
   baseline. The owner identifies the intended host as ARM64, but the authorized
   read-only SSH probe failed at name resolution, so its OS release and GLIBC
@@ -363,17 +363,18 @@ it to the public internet.
   cross-built ELF against a separately exported, pinned Debian Bookworm arm64
   rootfs (`debian@sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a`).
   The initial tested ELF had SHA-256
-  `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`. After
-  the selected-map resource validation change, the current cross-build
-  (`7d53d6fe4a03d9a322edd4cd96daf94be3298872ccd44060dcaf3c0b93a91b05`) was
-  smoke-tested again; the target loader reports `GLIBC 2.36`. With the rootfs and ELF mounted
-  read-only, Docker `network none`, no published ports, and the program bound to
-  `127.0.0.1:27025`, the sanitized query helper received the expected Source
-  A2S_INFO challenge and response: protocol `48`, `de_dust2`, `cstrike`,
-  `Counter-Strike`, 0/32 players, version `0.1.0`, response lengths `9/75`.
-  This verifies startup and query behavior under AArch64 user-mode emulation on
-  glibc 2.36 only; it is not native ARM64 execution, target-host baseline proof,
-  or a performance measurement. The emulation container was stopped.
+  `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`. The
+  latest cross-build after resource, spawn/objective and startup-metadata work
+  (`1c839964ff7510d042b2e2e412a81c08e7b862e8b40b7422007faf7d3f4cab1b`) was
+  smoke-tested again; the target loader reports `GLIBC 2.36`. With the rootfs
+  and ELF mounted read-only, Docker `network none`, no published ports, and the
+  program bound to `127.0.0.1:27025`, the sanitized query helper received the
+  expected Source A2S_INFO challenge and response: protocol `48`, `de_dust2`,
+  `cstrike`, `Counter-Strike`, 0/32 players, version `0.1.0`, response lengths
+  `9/75`. This verifies startup and query behavior under AArch64 user-mode
+  emulation on glibc 2.36 only; it is not native ARM64 execution, target-host
+  baseline proof, or a performance measurement. The emulation container was
+  stopped.
 - **Bounded process shutdown (2026-11-07):** the PoC now catches Unix `SIGINT`
   and `SIGTERM`, stops processing newly received UDP packets, and returns through
   normal Rust drop cleanup; the Steam adapter disconnects its owned pending and
@@ -409,6 +410,19 @@ it to the public internet.
   all-features UDP integration test confirms complete resource snapshots are
   validated before the listener responds, while explicitly keeping world and
   sign-on disabled.
+- **CS spawn/objective metadata preparation (2026-11-07):** added bounded
+  helpers that extract the raw origins of stock `info_player_start` and
+  `info_player_deathmatch` entities without assigning teams or moving a player.
+  The raw optional `angle` is preserved without a default or view policy.
+  `func_bomb_target` references resolve to validated non-world BSP submodels
+  and bounds. The opt-in map test parsed spawn records for the three entity
+  candidates and launched the real PoC with each selected BSP; both listened
+  only after startup logged the spawn/objective metadata. Synthetic malformed-
+  input tests, formatting, Clippy, default/all-feature tests, Python suites, and
+  the opt-in local map inventory passed. The test still reports only `35hp_2`
+  as a strict geometry failure among nine local candidates. This is static
+  preparation only: team selection, hull offset, player placement, trigger
+  occupancy and bomb/round behavior remain unimplemented.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
@@ -466,8 +480,9 @@ ARM64 execution remains unverified. See the updated
 - Build a playable native slice: instantiate map entities, select/spawn players,
   apply the HLDS hull-origin offset, implement player movement and hull/entity
   collision, then add the chosen mode's weapons, rounds and game rules. Current
-  translated BSP traces and collision-only slide primitive are experimental;
-  no complete movement tick or live world is active.
+  spawn and bomb-target extraction, translated BSP traces and collision-only
+  slide primitive are preparatory/experimental; no team selection, player
+  placement, trigger handling, complete movement tick or live world is active.
 - Implement native operations replacing required plugins (administration,
   health/metrics, bans, ranking/history and persistence) and verify failure and
   restart behavior. The inspected companion `plugins.ini` has no active plugin

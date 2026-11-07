@@ -57,6 +57,21 @@ GOLDSRC_COMPANION_MAPS_DIR=/path/to/local/maps \
   --test local_map_inventory -- --ignored --nocapture
 ```
 
+`poc/steam-server-query/src/spawns.rs` extracts the raw finite origins of
+`info_player_start` and `info_player_deathmatch` from parsed BSP entities. The
+optional scalar `angle` key is preserved without applying a default or view
+policy. At startup, `GOLDSRC_MAP_BSP` now validates and reports spawn metadata
+alongside the parsed map/geometry, while keeping simulation and sign-on disabled.
+The selected-map inventory test validates those records against local maps, and
+synthetic tests reject missing, duplicate, non-finite and malformed origins.
+This is map metadata preparation only: it does not assign teams, apply player
+hull offsets, choose a spawn, or instantiate a live player.
+`poc/steam-server-query/src/objectives.rs` also resolves each selected-map
+`func_bomb_target` model reference to a validated non-world BSP submodel and
+its raw bounds. This validates static entity-to-geometry linkage only; it does
+not implement trigger occupancy, bomb planting/defusal, explosions, or round
+transitions.
+
 ## Suggested native replacement phases
 
 The tracked plugin list currently identifies no enabled third-party plugin.

@@ -3,3 +3,5 @@ pub mod delta;
 pub mod hull_trace;
 pub mod map;
 pub mod movement;
+pub mod objectives;
+pub mod spawns;
