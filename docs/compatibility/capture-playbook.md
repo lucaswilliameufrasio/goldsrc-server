@@ -160,9 +160,10 @@ assets to commits.
 
 ## 5. Maps from the other CS 1.6 project
 
-The other project's map directory was not found in the inspected project paths.
-Use its maps locally only, as requested, and do not package or redistribute
-them. `fixtures/local/` is already ignored and can hold a local-only copy or
-symlink for tests. The source checkout path is still needed before an exact
-source directory can be added to this repository's `.gitignore`; do not add a
-blanket `**/maps/` rule that could hide future source-controlled assets.
+The other project's map directory has been located in a separate persistent
+local checkout. Use its maps there only; they were not copied into this
+repository and must not be packaged or redistributed. The selected checkout is
+outside this repository, so no `.gitignore` rule is needed. See the local-only
+entity inventory in
+[`native-capabilities-proposal.md`](../plans/native-capabilities-proposal.md);
+entity presence is not proof that a map loads or plays correctly.

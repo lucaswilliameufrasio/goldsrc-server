@@ -16,7 +16,8 @@ The first playable slice targets stock Counter-Strike 1.6 behavior with no
 custom plugin-driven mode or tournament rules. The map's stock entities define
 the objective path (for example, bomb defusal or hostage rescue). Implement and
 validate one locally supplied map/objective path first; the map itself remains
-unselected until the other project's map directory is located.
+unselected pending the owner's choice from the local inventory in
+[`native-capabilities-proposal.md`](../plans/native-capabilities-proposal.md).
 
 Use local Valve HLDS and an unmodified Steam CS 1.6 client as behavioral
 references. Do not invent round/buy settings or custom rules to fill evidence

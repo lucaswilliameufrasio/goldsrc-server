@@ -112,9 +112,12 @@ ignored by Git and the Valve binaries/assets are not part of this repository.
 
 The existing reference HLDS installation and its maps under
 `fixtures/local/reference-hlds/` are already ignored by Git. They are local
-reference/test assets, not selected production maps. The separate CS 1.6
-project's map directory has not been found; see the playbook before importing
-any of its assets.
+reference/test assets, not selected production maps. The separate server
+project's map directory has now been located in a persistent local checkout.
+Its BSPs remain there and were not copied into this repository. See
+[`native-capabilities-proposal.md`](../plans/native-capabilities-proposal.md)
+for the names and bounded entity-lump inventory; no production map has been
+selected.
 
 ## Next actions
 

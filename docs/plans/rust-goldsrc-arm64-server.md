@@ -304,14 +304,34 @@ it to the public internet.
   linked AArch64 PIE with interpreter `/lib/ld-linux-aarch64.so.1`, BuildID
   `9ad8b7e4ac608fa478d75fd0d0ab29add8df36a4`, and direct dependencies only on
   `libc.so.6` and `libgcc_s.so.1`. Its highest imported GLIBC symbol version is
-  `GLIBC_2.34`; this suggests a glibc 2.34 minimum for the current artifact, not
-  a confirmed deployment baseline. The actual Debian/Ubuntu target release and
+  `GLIBC_2.34`; this implies a glibc 2.34 minimum for that GCC-linked artifact,
+  not a confirmed deployment baseline. The separate Zig-linked artifact below
+  targets a lower symbol floor. The actual Debian/Ubuntu target release and
   native ARM64 runtime remain unknown; no ARM64 execution was performed.
+- **Pinned Zig cross-build (2026-11-07):** installed Zig 0.17.1 locally after
+  verifying the x86-64 Linux archive against the SHA-256 published in Zig's
+  official download index (`3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a`);
+  installed `cargo-zigbuild` 0.24.0 with `--locked`.
+  This command passed on the x86-64 workstation:
+
+  ```sh
+  cargo zigbuild --manifest-path poc/steam-server-query/Cargo.toml --all-targets --all-features --release --target aarch64-unknown-linux-gnu.2.17
+  ```
+
+  The resulting ELF is AArch64 PIE with interpreter
+  `/lib/ld-linux-aarch64.so.1`, dynamic dependencies on `libc.so.6`,
+  `libpthread.so.0`, and `libdl.so.2`, and imports through `GLIBC_2.17` only.
+  Its SHA-256 is
+  `1cf74ddcc82eeeffbc51f727a6043ef066ec3719f816f316cf2d637405a9b2c6`.
+  The 2.17 symbol floor was selected provisionally, not from a confirmed host
+  baseline. The owner identifies the intended host as ARM64, but the authorized
+  read-only SSH probe failed at name resolution, so its OS release and GLIBC
+  remain unverified; the ARM64 binary was not executed.
 - **Sanitized compatibility capture tooling (2026-11-07):** added a playbook for
   client/HLDS version metadata, query summaries, and server-side movement vectors
   without raw packet files, plus a standard-library A2S_INFO summarizer that
-  accepts only loopback/private targets and emits allowlisted fields. Its four
-  five synthetic tests pass. A one-second host loopback query received no
+  accepts only loopback/private targets and emits allowlisted fields. Its five
+  synthetic tests pass. A one-second host loopback query received no
   response. An isolated retry with the local HLDS image (`--network none`, LAN
   mode, no master server) found the process bound to UDP 27015 but still received
   no query response after startup; a loopback UDP self-test in that image passed.
@@ -355,13 +375,11 @@ ARM64 execution remains unverified. See the updated
   raw PCAPs or identity-bearing traces.
 - Implement the accepted stock-CS first playable mode from
   [`stock-cs16-first-playable.md`](../decisions/stock-cs16-first-playable.md).
-  The exact current plugin inventory and native replacements remain pending.
-- Obtain the separate project's exact map directory and the server's plugin
-  inventory; local searches found no `plugins.ini`, `.amxx`, or client
-  `appmanifest_10.acf` under `/mnt/storage/projects`.
-- Use the other project's maps locally only; do not package or redistribute
-  them. Locate its exact map directory and add an exact ignore rule if it is
-  inside this checkout. Confirm rights before any future redistribution.
+  The tracked companion `plugins.ini` has no active `.amxx` entries, but its
+  running deployment may differ; no plugin-specific replacement is established.
+- Confirm the initial map/objective choice from the local inventory in
+  [`native-capabilities-proposal.md`](native-capabilities-proposal.md). Map BSPs
+  are outside this checkout and remain local; no copy or packaging is needed.
 - Implement a native world/session producer that binds validated map state and
   verified sign-on inputs to the currently approved Steam session; keep admission
   fail-closed until this is ready.
@@ -379,9 +397,9 @@ ARM64 execution remains unverified. See the updated
   restart behavior.
 - Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
-  and measured load tests on ARM64 hardware. The local AArch64 release binary
-  links and imports GLIBC symbols through 2.34, but the deployment libc baseline
-  and native ARM64 runtime validation still require confirmation.
+  and measured load tests on ARM64 hardware. The local `cargo zigbuild` artifact
+  imports through GLIBC 2.17, but the deployment release/baseline and native
+  ARM64 runtime validation still require a resolvable authorized SSH target.
 
 ## References
 

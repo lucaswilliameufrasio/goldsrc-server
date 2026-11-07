@@ -3,7 +3,10 @@
 **Status:** the stock-CS first playable mode is selected in the
 [accepted decision](../decisions/stock-cs16-first-playable.md). The capability
 replacement phases below remain suggestions, not an accepted feature inventory.
-No AMX/Metamod plugin inventory was found in the inspected local project paths.
+The owner's companion server repository was inspected locally on 2026-11-07.
+Its tracked `files/plugins.ini` has no active `.amxx` entries and no `.amxx`
+binary is tracked; AMX Mod X/Metamod/dproto are optional build extras. This does
+not establish what is installed on a running deployment.
 
 ## First playable slice
 
@@ -16,17 +19,44 @@ tournament format, custom round limit, buy rules, or a community mod without
 confirmation.
 
 Keep the first playable target to one user-supplied local map and one objective
-path. The map name and its source path are not yet selected: the separate
-project's map directory was not found. Do not silently substitute the reference
-HLDS fixture map as production content. Do not package or redistribute map
-assets; the owner's choice is local-only use.
+path. The local map inventory contains nine BSPs: `35hp_2`, `aim_headshot`,
+`aim_map`, `awp_india`, `cs_deathmatch-final`, `cs_deathmatch_2005c`,
+`de_dust2_2x2`, `fy_pool_day`, and `fy_snow`. A bounded BSP v30 entity-lump
+inspection found these objective candidates:
+
+- `de_dust2_2x2`: one `func_bomb_target`, 20 `info_player_start`, and 20
+  `info_player_deathmatch` entities.
+- `fy_pool_day`: one `func_bomb_target`, one `func_buyzone`, and both spawn
+  entity types.
+- `cs_deathmatch-final`: two `hostage_entity` and two `info_hostage_rescue`
+  entities, plus both spawn entity types.
+
+These are entity-presence observations only; they do not prove a map loads or
+plays correctly. `de_dust2_2x2` is the strongest bomb-defusal candidate from this
+inventory and is also listed in the source project's `files/mapcycle.txt`, but
+no map/objective has been selected yet. Do not silently substitute the reference
+HLDS fixture map as production content. The BSPs remain in the companion
+checkout; do not copy, package, or redistribute them.
+
+An opt-in test using the Rust `load_world` parser was run against all nine local
+BSPs. It returned successfully for eight; `35hp_2` failed strict geometry
+validation. The three candidates above parsed, exposed non-empty collision
+geometry, and matched the listed objective/spawn entity counts. This is parser
+evidence only, not a successful HLDS load or playable round. Re-run without
+copying the assets with:
+
+```sh
+GOLDSRC_COMPANION_MAPS_DIR=/path/to/local/maps \
+  cargo test --manifest-path poc/steam-server-query/Cargo.toml \
+  --test local_map_inventory -- --ignored --nocapture
+```
 
 ## Suggested native replacement phases
 
-These are candidate capabilities, not a claim that particular plugins are in
-use. First collect each plugin's name, config, commands, hooks/events, data
-stores, and expected behavior; implement only entries confirmed by that
-inventory.
+The tracked plugin list currently identifies no enabled third-party plugin.
+If deployment-specific plugins are later found, collect their names, config,
+commands, hooks/events, data stores, and expected behavior before implementing
+replacements.
 
 | Phase | Native capability | Why / acceptance boundary |
 | --- | --- | --- |
@@ -38,8 +68,10 @@ inventory.
 
 ## Inputs needed before closing this proposal
 
-- The other project's exact map directory; keep it local and ignored.
-- A plugin inventory with configurations and examples of the behavior to retain.
+- Owner confirmation of the first map/objective candidate; maps remain local to
+  the companion checkout and are not copied into this repository.
+- A deployment-specific plugin inventory, if the running server enables plugins
+  not present in the tracked `plugins.ini`; do not share secret-bearing config.
 - Admin authentication/roles and ban policy before operating those controls.
 - Ranking/statistics identity and retention policy before storing persistent
   personal results.
