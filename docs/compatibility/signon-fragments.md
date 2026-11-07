@@ -365,6 +365,36 @@ hash checks. The metadata is local and ignored at
 `fixtures/local/hlds-consistency-metadata-10211.tsv`; this comparison does not
 verify a real client response or implement the resource exchange.
 
+For the selected local maps, `examples/hlds_selected_map_resources.gdb` captured
+each HLDS 10211 resource manifest, consistency metadata and only the length/MD5
+of the complete `SV_SendResources` output. The isolated process had no network;
+the reference tree was read-only, each companion BSP was mounted read-only, and
+only `/tmp`, the temporary `cstrike/maps` mount, and the ignored metadata output
+were writable ephemeral mounts. No BSP was copied or packaged. Rust reproduced
+both captured wire lengths and digests exactly:
+
+| Map | Resources | Consistency checks | Wire bytes | HLDS wire MD5 |
+| --- | ---: | ---: | ---: | --- |
+| `de_dust2_2x2` | 754 | 62 | 19047 | `3fb3a1b41adb2f087ae86d72f6a8d257` |
+| `fy_pool_day` | 757 | 62 | 18993 | `6c199f97e42c0901d2fedec5da585826` |
+
+The `fy_pool_day` snapshot contains one HLDS `nDownloadSize=-1` value. Because
+the wire field is 24 bits, the local snapshot represents that sentinel as
+`0x00ffffff`; the exact full-message digest confirms the encoded result. The
+ignored metadata is under
+`fixtures/local/selected-map-resource-evidence-wire24/`. To repeat the Rust
+comparison after owner-controlled local captures are present:
+
+```sh
+GOLDSRC_SELECTED_MAP_RESOURCE_DIR="$PWD/fixtures/local/selected-map-resource-evidence-wire24" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --bin steam-server-query-poc \
+  --all-features selected_map_manifests_match_local_hlds_wire_digests -- --ignored
+```
+
+This is offline serialization evidence for these captured map/build inputs only.
+It does not establish official-client resource acceptance, downloads, active
+asset availability, sign-on, objective completion or playable rounds.
+
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \

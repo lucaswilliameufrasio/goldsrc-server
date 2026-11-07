@@ -323,7 +323,7 @@ it to the public internet.
   `/lib/ld-linux-aarch64.so.1`, dynamic dependencies on `libc.so.6`,
   `libpthread.so.0`, and `libdl.so.2`, and imports through `GLIBC_2.17` only.
   Its SHA-256 is
-  `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`.
+  `7d53d6fe4a03d9a322edd4cd96daf94be3298872ccd44060dcaf3c0b93a91b05`.
   The 2.17 symbol floor was selected provisionally, not from a confirmed host
   baseline. The owner identifies the intended host as ARM64, but the authorized
   read-only SSH probe failed at name resolution, so its OS release and GLIBC
@@ -362,9 +362,11 @@ it to the public internet.
   `qemu-aarch64-static` (Debian package `1:7.2+dfsg-7+deb12u18`) ran the
   cross-built ELF against a separately exported, pinned Debian Bookworm arm64
   rootfs (`debian@sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a`).
-  The tested ELF SHA-256 was
-  `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`;
-  the target loader reports `GLIBC 2.36`. With the rootfs and ELF mounted
+  The initial tested ELF had SHA-256
+  `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`. After
+  the selected-map resource validation change, the current cross-build
+  (`7d53d6fe4a03d9a322edd4cd96daf94be3298872ccd44060dcaf3c0b93a91b05`) was
+  smoke-tested again; the target loader reports `GLIBC 2.36`. With the rootfs and ELF mounted
   read-only, Docker `network none`, no published ports, and the program bound to
   `127.0.0.1:27025`, the sanitized query helper received the expected Source
   A2S_INFO challenge and response: protocol `48`, `de_dust2`, `cstrike`,
@@ -389,6 +391,18 @@ it to the public internet.
   inventory test also passed (eight parser successes; only `35hp_2` failed its
   strict geometry gate), as did the normal default/all-feature suites. These
   remain offline reference checks, not client sign-on or gameplay evidence.
+- **Selected-map resource wire comparison (2026-11-07):** the isolated HLDS
+  metadata exporter loaded `de_dust2_2x2` and `fy_pool_day` with their BSPs
+  mounted read-only, `network none`, and only a temporary map-directory mount
+  writable. It retained no raw packet/memory dump and did not copy either BSP.
+  Rust matched the full `SV_SendResources` message length and MD5 for both maps:
+  754 resources/62 checks/19047 bytes/
+  `3fb3a1b41adb2f087ae86d72f6a8d257`, and 757/62/18993 bytes/
+  `6c199f97e42c0901d2fedec5da585826`. `fy_pool_day` includes one signed HLDS
+  `nDownloadSize=-1`, represented as the corresponding 24-bit wire value
+  `0x00ffffff`; the complete digest matched. The local metadata remains ignored
+  under `fixtures/local/selected-map-resource-evidence-wire24/`. This proves
+  offline serialization only, not client sign-on, downloads or gameplay.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
@@ -433,7 +447,9 @@ ARM64 execution remains unverified. See the updated
   running deployment may differ; no plugin-specific replacement is established.
 - Implement and validate the owner-selected `de_dust2_2x2` and `fy_pool_day`
   bomb-defusal paths. Their map BSPs are outside this checkout and remain local;
-  HLDS loading/A2S passed, but live objective gameplay remains unverified.
+  HLDS loading/A2S and the selected-map resource wire messages now match local
+  references, but live client resource acceptance, objective completion and
+  playable rounds remain unverified.
 - Implement a native world/session producer that binds validated map state and
   verified sign-on inputs to the currently approved Steam session; keep admission
   fail-closed until this is ready.

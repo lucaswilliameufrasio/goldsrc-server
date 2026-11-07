@@ -9,6 +9,7 @@ pub struct Resource<'a> {
     pub kind: u8,
     pub filename: &'a str,
     pub index: u16,
+    /// The 24-bit wire value; `0x00ff_ffff` preserves HLDS's signed `-1` sentinel.
     pub download_size: u32,
     /// Only RES_FATALIFMISSING and RES_WASMISSING are supported.
     pub flags: u8,
@@ -387,6 +388,13 @@ fn snapshot_error() -> io::Error {
     Error::new(ErrorKind::InvalidData, "invalid local resource snapshot")
 }
 
+fn snapshot_error_detail(reason: &'static str) -> io::Error {
+    Error::new(
+        ErrorKind::InvalidData,
+        format!("invalid local resource snapshot: {reason}"),
+    )
+}
+
 fn snapshot_hex<const N: usize>(text: &str) -> io::Result<[u8; N]> {
     if text.len() != N * 2 || !text.is_ascii() {
         return Err(snapshot_error());
@@ -426,54 +434,82 @@ impl ManifestSnapshot {
         for line in manifest.lines() {
             let fields: Vec<_> = line.split('\t').collect();
             if fields.len() != 6 || entries.len() >= 4095 {
-                return Err(snapshot_error());
+                return Err(snapshot_error_detail("invalid manifest row shape or count"));
             }
-            let flags: u8 = fields[4].parse().map_err(|_| snapshot_error())?;
+            let flags: u8 = fields[4]
+                .parse()
+                .map_err(|_| snapshot_error_detail("invalid resource flags"))?;
             if flags & !0x83 != 0 {
-                return Err(snapshot_error());
+                return Err(snapshot_error_detail("unsupported resource flags"));
             }
             selected.push(flags & 0x80 != 0);
             entries.push(SnapshotEntry {
                 filename: fields[0].to_owned(),
-                kind: fields[1].parse().map_err(|_| snapshot_error())?,
-                index: fields[2].parse().map_err(|_| snapshot_error())?,
-                size: fields[3].parse().map_err(|_| snapshot_error())?,
+                kind: fields[1]
+                    .parse()
+                    .map_err(|_| snapshot_error_detail("invalid resource kind"))?,
+                index: fields[2]
+                    .parse()
+                    .map_err(|_| snapshot_error_detail("invalid resource index"))?,
+                size: fields[3]
+                    .parse()
+                    .map_err(|_| snapshot_error_detail("invalid resource size"))?,
                 flags: flags & 3,
                 reserved: snapshot_hex(fields[5])?,
                 hash: None,
             });
         }
         if entries.is_empty() {
-            return Err(snapshot_error());
+            return Err(snapshot_error_detail("empty resource manifest"));
         }
         for line in checks.lines() {
             let fields: Vec<_> = line.split('\t').collect();
             if fields.len() != 4 {
-                return Err(snapshot_error());
+                return Err(snapshot_error_detail("invalid consistency row shape"));
             }
-            let position: usize = fields[0].parse().map_err(|_| snapshot_error())?;
-            let entry = entries.get_mut(position).ok_or_else(snapshot_error)?;
+            let position: usize = fields[0]
+                .parse()
+                .map_err(|_| snapshot_error_detail("invalid consistency position"))?;
+            let entry = entries
+                .get_mut(position)
+                .ok_or_else(|| snapshot_error_detail("consistency position is out of range"))?;
             if !selected[position]
                 || entry.hash.is_some()
                 || entry.reserved != snapshot_hex(fields[2])?
             {
-                return Err(snapshot_error());
+                return Err(snapshot_error_detail(
+                    "consistency row does not match manifest",
+                ));
             }
             // The fourth column is reference output only, never a source of trust.
-            let _: [u8; 32] = snapshot_hex(fields[3])?;
-            let hash = snapshot_hex(fields[1])?;
-            check_from_metadata(position as u16, hash, entry.reserved, spawn_count)
-                .map_err(|_| snapshot_error())?;
+            let _: [u8; 32] = snapshot_hex(fields[3])
+                .map_err(|_| snapshot_error_detail("invalid decoded consistency metadata"))?;
+            let hash = snapshot_hex(fields[1])
+                .map_err(|_| snapshot_error_detail("invalid consistency hash"))?;
+            check_from_metadata(position as u16, hash, entry.reserved, spawn_count).map_err(
+                |error| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        format!("invalid consistency metadata at resource position {position}: {error:?}"),
+                    )
+                },
+            )?;
             entry.hash = Some(hash);
         }
         for (index, entry) in entries.iter().enumerate() {
             if selected[index] != entry.hash.is_some() {
-                return Err(snapshot_error());
+                return Err(snapshot_error_detail(
+                    "manifest/checklist selection mismatch",
+                ));
             }
         }
         let snapshot = Self { entries };
-        ResourceNegotiation::prepare(spawn_count, &snapshot.entries())
-            .map_err(|_| snapshot_error())?;
+        ResourceNegotiation::prepare(spawn_count, &snapshot.entries()).map_err(|error| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid local resource snapshot encoding: {error}"),
+            )
+        })?;
         Ok(snapshot)
     }
 
@@ -584,6 +620,7 @@ impl ResourceNegotiation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use md5::{Digest, Md5};
 
     #[test]
     fn snapshot_rejects_inconsistent_incomplete_and_duplicate_checks() {
@@ -634,6 +671,70 @@ mod tests {
             message,
             std::fs::read(root.join("hlds-manifest-consistency-10211.bin")).unwrap()
         );
+    }
+
+    #[test]
+    #[ignore = "requires selected-map HLDS metadata and wire-summary fixtures"]
+    fn selected_map_manifests_match_local_hlds_wire_digests() {
+        let root = std::env::var_os("GOLDSRC_SELECTED_MAP_RESOURCE_DIR")
+            .expect("missing selected-map resource fixture directory");
+        let root = Path::new(&root);
+
+        for map_name in ["de_dust2_2x2", "fy_pool_day"] {
+            let manifest_path = root.join(format!("{map_name}-manifest.tsv"));
+            let checks_path = root.join(format!("{map_name}-checks.tsv"));
+            let summary_path = root.join(format!("{map_name}-wire-summary.tsv"));
+            let summary = read_snapshot(&summary_path).unwrap();
+            let fields: Vec<_> = summary.trim_end().split('\t').collect();
+            assert_eq!(fields.len(), 7);
+            assert_eq!(fields[0], map_name);
+
+            let spawn_count: u32 = fields[1].parse().unwrap();
+            let expected_resources: usize = fields[2].parse().unwrap();
+            let expected_checks: usize = fields[3].parse().unwrap();
+            let expected_size_sentinels: usize = fields[4].parse().unwrap();
+            let expected_wire_length: usize = fields[5].parse().unwrap();
+            let expected_wire_md5 = fields[6];
+
+            let snapshot = ManifestSnapshot::load(&manifest_path, &checks_path, spawn_count)
+                .unwrap_or_else(|error| panic!("failed to parse {map_name} fixture: {error}"));
+            let entries = snapshot.entries();
+            assert_eq!(entries.len(), expected_resources, "{map_name} resources");
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry.consistency_hash.is_some())
+                    .count(),
+                expected_checks,
+                "{map_name} consistency entries"
+            );
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry.resource.download_size == 0x00ff_ffff)
+                    .count(),
+                expected_size_sentinels,
+                "{map_name} signed download-size sentinels"
+            );
+
+            let (_, encoded) = ResourceNegotiation::prepare(spawn_count, &entries)
+                .unwrap_or_else(|error| panic!("failed to encode {map_name} manifest: {error}"));
+            assert_eq!(
+                encoded.len(),
+                expected_wire_length,
+                "{map_name} wire length"
+            );
+
+            let digest = Md5::digest(&encoded);
+            let mut actual_wire_md5 = String::with_capacity(digest.len() * 2);
+            for byte in digest {
+                actual_wire_md5.push_str(&format!("{byte:02x}"));
+            }
+            assert_eq!(
+                actual_wire_md5, expected_wire_md5,
+                "{map_name} HLDS wire digest"
+            );
+        }
     }
 
     fn negotiation_entry(hash: Option<[u8; 4]>) -> ManifestEntry<'static> {
