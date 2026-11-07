@@ -1,5 +1,6 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -32,6 +33,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:27025";
+const DEFAULT_QUERY_MAP: &str = "de_dust2";
 const QUERY_PREFIX: &[u8] = b"\xff\xff\xff\xffTSource Engine Query\0";
 const PROTOCOL_VERSION: u8 = 48;
 const CHALLENGE: i32 = 0x4353_3136;
@@ -39,9 +41,10 @@ const CHALLENGE: i32 = 0x4353_3136;
 fn main() -> std::io::Result<()> {
     shutdown::install()?;
 
-    let _prepared_map = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
-        let (entities, crc, geometry) =
-            steam_server_query_poc::map::load_world(std::path::Path::new(&path))?;
+    let (_prepared_map, query_map) = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
+        let map_path = Path::new(&path);
+        let query_map = query_map_name(map_path)?;
+        let (entities, crc, geometry) = steam_server_query_poc::map::load_world(map_path)?;
         let spawns = steam_server_query_poc::spawns::extract_cs_spawn_entities(&entities)?;
         let bomb_targets = steam_server_query_poc::objectives::extract_bomb_target_brushes(
             &entities,
@@ -55,10 +58,14 @@ fn main() -> std::io::Result<()> {
             spawns.len(),
             bomb_targets.len(),
         );
-        Some((entities, crc, geometry, spawns, bomb_targets))
+        (
+            Some((entities, crc, geometry, spawns, bomb_targets)),
+            query_map,
+        )
     } else {
-        None
+        (None, DEFAULT_QUERY_MAP.to_owned())
     };
+    let query_info_response = encode_info_response(&query_map);
     let delta_list = std::env::var_os("GOLDSRC_DELTA_LIST");
     let delta_catalog = std::env::var_os("GOLDSRC_DELTA_CATALOG");
     let _prepared_delta = match (delta_list, delta_catalog) {
@@ -337,7 +344,7 @@ fn main() -> std::io::Result<()> {
                     }
                     reply.packet
                 } else {
-                    response_for(&packet[..packet_length])
+                    response_for(&packet[..packet_length], &query_info_response)
                 };
                 if let Some(response) = response {
                     let sent = socket.send_to(&response, peer)?;
@@ -543,7 +550,7 @@ fn is_tailscale_ipv4(address: Ipv4Addr) -> bool {
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
-fn response_for(packet: &[u8]) -> Option<Vec<u8>> {
+fn response_for(packet: &[u8], info_response: &[u8]) -> Option<Vec<u8>> {
     if packet == QUERY_PREFIX {
         return Some(encode_challenge());
     }
@@ -561,7 +568,7 @@ fn response_for(packet: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    Some(encode_info_response())
+    Some(info_response.to_vec())
 }
 
 fn encode_challenge() -> Vec<u8> {
@@ -572,13 +579,13 @@ fn encode_challenge() -> Vec<u8> {
     response
 }
 
-fn encode_info_response() -> Vec<u8> {
+fn encode_info_response(map_name: &str) -> Vec<u8> {
     let mut response = Vec::with_capacity(128);
     response.extend_from_slice(&[0xff; 4]);
     response.push(b'I');
     response.push(PROTOCOL_VERSION);
     push_c_string(&mut response, "CS 1.6 Rust Query PoC");
-    push_c_string(&mut response, "de_dust2");
+    push_c_string(&mut response, map_name);
     push_c_string(&mut response, "cstrike");
     push_c_string(&mut response, "Counter-Strike");
     response.extend_from_slice(&10_u16.to_le_bytes());
@@ -589,6 +596,26 @@ fn encode_info_response() -> Vec<u8> {
     response
 }
 
+fn query_map_name(path: &Path) -> io::Result<String> {
+    let map_name = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid BSP map filename"))?;
+    let map_name_bytes = map_name.as_bytes();
+    if map_name_bytes.is_empty()
+        || map_name_bytes.len() > 31
+        || !map_name_bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "BSP map filename is not a safe GoldSrc map name",
+        ));
+    }
+    Ok(map_name.to_owned())
+}
+
 fn push_c_string(output: &mut Vec<u8>, value: &str) {
     output.extend_from_slice(value.as_bytes());
     output.push(0);
@@ -597,15 +624,17 @@ fn push_c_string(output: &mut Vec<u8>, value: &str) {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::path::Path;
 
     use super::{
-        CHALLENGE, DEFAULT_LISTEN_ADDRESS, QUERY_PREFIX, encode_info_response,
-        parse_listen_address, response_for,
+        CHALLENGE, DEFAULT_LISTEN_ADDRESS, DEFAULT_QUERY_MAP, QUERY_PREFIX, encode_info_response,
+        parse_listen_address, query_map_name, response_for,
     };
 
     #[test]
     fn should_issue_challenge_for_steam_query() {
-        let response = response_for(QUERY_PREFIX).expect("query should receive a challenge");
+        let response = response_for(QUERY_PREFIX, &encode_info_response(DEFAULT_QUERY_MAP))
+            .expect("query should receive a challenge");
 
         assert_eq!(&response[..5], &[0xff, 0xff, 0xff, 0xff, b'A']);
         assert_eq!(&response[5..], &CHALLENGE.to_le_bytes());
@@ -615,20 +644,41 @@ mod tests {
     fn should_return_server_info_for_valid_challenge() {
         let mut request = QUERY_PREFIX.to_vec();
         request.extend_from_slice(&CHALLENGE.to_le_bytes());
+        let info_response = encode_info_response(DEFAULT_QUERY_MAP);
 
-        let response = response_for(&request).expect("valid challenge should receive info");
+        let response =
+            response_for(&request, &info_response).expect("valid challenge should receive info");
 
-        assert_eq!(response, encode_info_response());
+        assert_eq!(response, info_response);
         assert_eq!(&response[..6], &[0xff, 0xff, 0xff, 0xff, b'I', 48]);
+    }
+
+    #[test]
+    fn query_info_can_advertise_a_loaded_map_name() {
+        let map_name = "de_dust2_2x2";
+        let mut request = QUERY_PREFIX.to_vec();
+        request.extend_from_slice(&CHALLENGE.to_le_bytes());
+        let info_response = encode_info_response(map_name);
+
+        let response = response_for(&request, &info_response)
+            .expect("valid challenge should receive the configured map info");
+
+        assert_eq!(response, info_response);
+        assert!(
+            response
+                .windows(map_name.len())
+                .any(|window| window == map_name.as_bytes())
+        );
     }
 
     #[test]
     fn should_ignore_invalid_or_malformed_queries() {
         let mut request = QUERY_PREFIX.to_vec();
         request.extend_from_slice(&0_i32.to_le_bytes());
+        let info_response = encode_info_response(DEFAULT_QUERY_MAP);
 
-        assert!(response_for(&request).is_none());
-        assert!(response_for(b"not a Steam query").is_none());
+        assert!(response_for(&request, &info_response).is_none());
+        assert!(response_for(b"not a Steam query", &info_response).is_none());
     }
 
     #[test]
@@ -640,8 +690,22 @@ mod tests {
             b"\xff\xff\xff\xffgetchallenge steam\nconnect x".as_slice(),
             b"\xff\xff\xff\xffgetchallenge steam\n\0secret".as_slice(),
         ] {
-            assert!(response_for(request).is_none());
+            assert!(response_for(request, &encode_info_response(DEFAULT_QUERY_MAP)).is_none());
         }
+    }
+
+    #[test]
+    fn query_map_name_uses_bsp_stem_and_rejects_unsafe_names() {
+        assert_eq!(
+            query_map_name(Path::new("maps/de_dust2_2x2.bsp")).unwrap(),
+            "de_dust2_2x2"
+        );
+        assert_eq!(
+            query_map_name(Path::new("maps/cs_deathmatch-final.bsp")).unwrap(),
+            "cs_deathmatch-final"
+        );
+        assert!(query_map_name(Path::new("maps/has space.bsp")).is_err());
+        assert!(query_map_name(Path::new("maps/abcdefghijklmnopqrstuvwxyz123456.bsp")).is_err());
     }
 
     #[test]

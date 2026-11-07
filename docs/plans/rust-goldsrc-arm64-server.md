@@ -323,7 +323,7 @@ it to the public internet.
   `/lib/ld-linux-aarch64.so.1`, dynamic dependencies on `libc.so.6`,
   `libpthread.so.0`, and `libdl.so.2`, and imports through `GLIBC_2.17` only.
   Its SHA-256 is
-  `1c839964ff7510d042b2e2e412a81c08e7b862e8b40b7422007faf7d3f4cab1b`.
+  `153ca5629db19853fe6aafaa3f175567e9291ce9548024a5dddc7d53312e1be3`.
   The 2.17 symbol floor was selected provisionally, not from a confirmed host
   baseline. The owner identifies the intended host as ARM64, but the authorized
   read-only SSH probe failed at name resolution, so its OS release and GLIBC
@@ -364,8 +364,9 @@ it to the public internet.
   rootfs (`debian@sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a`).
   The initial tested ELF had SHA-256
   `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`. The
-  latest cross-build after resource, spawn/objective and startup-metadata work
-  (`1c839964ff7510d042b2e2e412a81c08e7b862e8b40b7422007faf7d3f4cab1b`) was
+  latest cross-build after resource, spawn/objective, startup-metadata and
+  loaded-map A2S reporting work
+  (`153ca5629db19853fe6aafaa3f175567e9291ce9548024a5dddc7d53312e1be3`) was
   smoke-tested again; the target loader reports `GLIBC 2.36`. With the rootfs
   and ELF mounted read-only, Docker `network none`, no published ports, and the
   program bound to `127.0.0.1:27025`, the sanitized query helper received the
@@ -423,6 +424,12 @@ it to the public internet.
   as a strict geometry failure among nine local candidates. This is static
   preparation only: team selection, hull offset, player placement, trigger
   occupancy and bomb/round behavior remain unimplemented.
+- **Loaded-map query metadata (2026-11-07):** when `GOLDSRC_MAP_BSP` is set, the
+  validated BSP filename stem is now used in A2S_INFO instead of always
+  advertising `de_dust2`. The opt-in startup integration test completed the real
+  two-step UDP query against each selected local map and parsed the returned map
+  field. Synthetic tests cover allowed names and unsafe/overlong stems. This
+  remains query metadata only, not client sign-on or active world evidence.
 
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the

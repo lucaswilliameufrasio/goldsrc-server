@@ -37,6 +37,9 @@ client's `getchallenge steam` on `127.0.0.1:27025`. Game challenges are bound to
 the source IP/port, expire after 30 seconds, and are consumed by a well-formed
 connect. Subsequent game connections undergo bounded envelope validation and
 receive explicit errors or a Steam-auth-unavailable rejection, never admission.
+Without a loaded BSP, A2S_INFO reports `de_dust2`; with `GOLDSRC_MAP_BSP`, it
+reports the validated map filename stem after static BSP/spawn/objective parsing.
+World simulation and client sign-on remain disabled.
 To test from another device, bind the server host's private address:
 
 ```bash

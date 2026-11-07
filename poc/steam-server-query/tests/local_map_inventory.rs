@@ -116,7 +116,7 @@ fn assert_map_startup_prepares_metadata(map_path: &std::path::Path, map_name: &s
     client
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
-    let mut response = [0_u8; 64];
+    let mut response = [0_u8; 512];
     let mut ready = false;
     for _ in 0..40 {
         assert!(
@@ -143,6 +143,33 @@ fn assert_map_startup_prepares_metadata(map_path: &std::path::Path, map_name: &s
         }
     }
     assert!(ready, "server did not listen after preparing {map_name}");
+
+    let query_prefix = b"\xff\xff\xff\xffTSource Engine Query\0";
+    client.send_to(query_prefix, address).unwrap();
+    let (challenge_length, peer) = client.recv_from(&mut response).unwrap();
+    assert_eq!(peer, address);
+    assert_eq!(challenge_length, 9);
+    assert_eq!(&response[..5], b"\xff\xff\xff\xffA");
+    let query_challenge: [u8; 4] = response[5..9].try_into().unwrap();
+
+    let mut info_request = query_prefix.to_vec();
+    info_request.extend_from_slice(&query_challenge);
+    client.send_to(&info_request, address).unwrap();
+    let (info_length, peer) = client.recv_from(&mut response).unwrap();
+    assert_eq!(peer, address);
+    assert!(info_length > 6);
+    assert_eq!(&response[..6], b"\xff\xff\xff\xffI\x30");
+    let mut fields = Vec::with_capacity(4);
+    let mut position = 6;
+    for _ in 0..4 {
+        let field_length = response[position..info_length]
+            .iter()
+            .position(|byte| *byte == 0)
+            .expect("A2S string field should be NUL-terminated");
+        fields.push(&response[position..position + field_length]);
+        position += field_length + 1;
+    }
+    assert_eq!(fields[1], map_name.as_bytes());
 
     server.0.kill().unwrap();
     let _ = server.0.wait().unwrap();
