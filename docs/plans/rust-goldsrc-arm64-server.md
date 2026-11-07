@@ -204,6 +204,32 @@ it to the public internet.
   the local HLDS map. Other fixture-dependent HLDS tests remain ignored unless
   their specific local captures are supplied.
 
+### Progress (2026-11-07)
+
+- **Measured from local Valve HLDS 10211:** the existing isolated GDB capture
+  now records `hull_t.clip_mins`/`clip_maxs` for all four world-model hulls.
+  It returned `[0,0,0]`/`[0,0,0]` for hull 0, `[-16,-16,-36]`/`[16,16,36]`
+  for hull 1, `[-32,-32,-32]`/`[32,32,32]` for hull 2, and
+  `[-16,-16,-18]`/`[16,16,18]` for hull 3.
+- **Implemented:** `hull_trace::BspHull` names those four indices and exposes
+  the measured bounds; `trace_point` now takes this enum rather than a raw
+  integer. Its inputs remain the direct model-local points for the low-level
+  hull traversal; it does not apply `SV_HullForEntity`'s entity-origin offset.
+- **Verified:** `cargo test --manifest-path
+  poc/steam-server-query/Cargo.toml --all-targets` passed both without and with
+  `--all-features`; `cargo fmt --manifest-path
+  poc/steam-server-query/Cargo.toml -- --check`, `cargo build --manifest-path
+  poc/steam-server-query/Cargo.toml`, and `cargo clippy --manifest-path
+  poc/steam-server-query/Cargo.toml --all-targets --all-features -- -D warnings`
+  passed. With `GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local"`, the opt-in
+  `world_hull_traces_match_hlds` and `impact_positions_and_planes_match_hlds`
+  tests also passed after the trace API switched to typed hulls. Other
+  fixture-dependent tests without their required captures remain ignored.
+- **Next collision slice:** capture and implement the `SV_HullForEntity`
+  origin-to-hull coordinate offset, first for static world-model player hulls,
+  and compare resulting traces with HLDS. Keep player movement and live sign-on
+  disabled until that layer is verified.
+
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
 is confirmed by the locally acquired HLDS executable (App BuildID `15961496`,
@@ -238,9 +264,9 @@ gaps; do not treat local synthetic tests as those fixtures.
   reliable fragmentation, and the remaining client callbacks. The current
   serverinfo and resource paths are preparation-only and are not sent live.
 - Build a playable native slice: instantiate map entities, select/spawn players,
-  implement player movement and appropriate hull/entity collision, then add the
-  chosen mode's weapons, rounds and game rules. Current BSP traces are static
-  point sweeps only.
+  apply the HLDS hull-origin offset, implement player movement and hull/entity
+  collision, then add the chosen mode's weapons, rounds and game rules. Current
+  BSP traces are static low-level point sweeps only.
 - Implement native operations replacing required plugins (administration,
   health/metrics, bans, ranking/history and persistence) and verify failure and
   restart behavior.

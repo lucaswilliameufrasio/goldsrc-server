@@ -70,9 +70,23 @@ is not a swept trace, player movement, entity collision or a live world.
 
 `hull_trace::trace_point` now provides a static point sweep in model-local
 coordinates with the GoldSrc hull epsilon, impact plane, fraction and solid/open/
-water flags. It limits recursion to 128 levels and total work to one million
-steps; exceeding either returns an error rather than a collision result. The
-opt-in `world_hull_traces_match_hlds` compares fraction (tolerance 1e-5) and
+water flags. `BspHull` gives typed names to the four standard BSP hull indices;
+their `clip_mins`/`clip_maxs` were read from local HLDS 10211 at
+`SV_ActivateServer` and are asserted by a unit test:
+
+| `BspHull` | Index | Clip mins | Clip maxs |
+| --- | ---: | --- | --- |
+| `Point` | 0 | `[0, 0, 0]` | `[0, 0, 0]` |
+| `StandingPlayer` | 1 | `[-16, -16, -36]` | `[16, 16, 36]` |
+| `Large` | 2 | `[-32, -32, -32]` | `[32, 32, 32]` |
+| `CrouchedPlayer` | 3 | `[-16, -16, -18]` | `[16, 16, 18]` |
+
+`trace_point` takes one of these typed choices, limits recursion to 128 levels
+and total work to one million steps, and returns an error rather than a collision
+result if a bound is exceeded. Its start/end values are the direct points passed
+to GoldSrc's low-level hull trace; it does not apply the entity-origin offset in
+`SV_HullForEntity`. The opt-in `world_hull_traces_match_hlds` compares fraction
+(tolerance 1e-5) and
 flags for four synthetic segments across all four world-model hulls against
 `examples/hlds_hull_trace.gdb` on local HLDS 10211. A second opt-in test,
 `impact_positions_and_planes_match_hlds`, compares final position for 24 cases
@@ -80,8 +94,9 @@ and normal and plane distance for the 10 impacts, including starts in solid,
 both directions and inclined planes. Tolerances are 0.001 map units for position
 and distance and 1e-5 for normals; no-impact cases require the unchanged end
 point and no plane. This is limited reference evidence, not exhaustive parity.
-This does not implement moving entities, automatic hull selection, box sweeps,
-rotation, player movement or a running world.
+Automatic posture-to-hull selection, entity-origin transforms/rotation, player
+movement, collision against moving entities and a running world remain
+unimplemented. The fixed BSP hull choices are not arbitrary box dimensions.
 
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \

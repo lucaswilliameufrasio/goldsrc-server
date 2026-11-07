@@ -9,6 +9,38 @@ const EPSILON: f32 = 1.0 / 32.0;
 const MAX_DEPTH: usize = 128;
 const MAX_WORK: usize = 1_000_000;
 
+/// The four precompiled collision hulls in a GoldSrc BSP model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub enum BspHull {
+    Point = 0,
+    StandingPlayer = 1,
+    Large = 2,
+    CrouchedPlayer = 3,
+}
+
+impl BspHull {
+    pub const ALL: [Self; 4] = [
+        Self::Point,
+        Self::StandingPlayer,
+        Self::Large,
+        Self::CrouchedPlayer,
+    ];
+
+    /// Return the clip bounds recorded by the reference HLDS hull.
+    ///
+    /// `trace_point` traces the supplied point directly; it does not apply the
+    /// `SV_HullForEntity` offset that converts an entity origin to hull space.
+    pub const fn clip_bounds(self) -> ([f32; 3], [f32; 3]) {
+        match self {
+            Self::Point => ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            Self::StandingPlayer => ([-16.0, -16.0, -36.0], [16.0, 16.0, 36.0]),
+            Self::Large => ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]),
+            Self::CrouchedPlayer => ([-16.0, -16.0, -18.0], [16.0, 16.0, 18.0]),
+        }
+    }
+}
+
 fn invalid() -> io::Error {
     Error::new(ErrorKind::InvalidData, "invalid or excessive BSP trace")
 }
@@ -221,18 +253,21 @@ impl Query<'_> {
 }
 
 /// Trace a point against one static model hull in model-local coordinates.
-/// Fails closed on nonfinite arithmetic, invalid graphs, or excessive work/depth.
+/// `start` and `end` are the direct points passed to GoldSrc's hull check; the
+/// entity-origin offset used by `SV_HullForEntity` is not applied here. Fails
+/// closed on nonfinite arithmetic, invalid graphs, or excessive work/depth.
 pub fn trace_point(
     geometry: &Geometry,
     model: usize,
-    hull: usize,
+    hull: BspHull,
     start: [f32; 3],
     end: [f32; 3],
 ) -> io::Result<Trace> {
-    if hull >= 4 || !start.iter().chain(end.iter()).all(|v| v.is_finite()) {
+    if !start.iter().chain(end.iter()).all(|v| v.is_finite()) {
         return Err(invalid());
     }
-    let root = geometry.models.get(model).ok_or_else(invalid)?.headnodes[hull];
+    let hull_index = hull as usize;
+    let root = geometry.models.get(model).ok_or_else(invalid)?.headnodes[hull_index];
     let mut trace = Trace {
         fraction: 1.0,
         end,
@@ -244,7 +279,7 @@ pub fn trace_point(
     };
     let mut query = Query {
         geometry,
-        hull,
+        hull: hull_index,
         root,
         remaining: MAX_WORK,
     };
@@ -298,22 +333,60 @@ mod tests {
     }
 
     #[test]
+    fn standard_bsp_hulls_match_hlds_bounds() {
+        let expected = [
+            ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            ([-16.0, -16.0, -36.0], [16.0, 16.0, 36.0]),
+            ([-32.0, -32.0, -32.0], [32.0, 32.0, 32.0]),
+            ([-16.0, -16.0, -18.0], [16.0, 16.0, 18.0]),
+        ];
+        for (index, hull) in BspHull::ALL.iter().copied().enumerate() {
+            assert_eq!(hull as usize, index);
+            assert_eq!(hull.clip_bounds(), expected[index]);
+        }
+    }
+
+    #[test]
     fn synthetic_half_space_trace_and_failure_cases() {
         let mut geometry = half_space();
-        let trace = trace_point(&geometry, 0, 1, [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]).unwrap();
+        let trace = trace_point(
+            &geometry,
+            0,
+            BspHull::StandingPlayer,
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+        )
+        .unwrap();
         assert_eq!(trace.fraction, 0.484375);
         assert_eq!(trace.end, [0.03125, 0.0, 0.0]);
         assert_eq!(trace.plane, Some(([1.0, 0.0, 0.0], 0.0)));
         assert!(!trace.all_solid && !trace.start_solid && trace.in_open);
-        let trace = trace_point(&geometry, 0, 1, [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
+        let trace = trace_point(
+            &geometry,
+            0,
+            BspHull::StandingPlayer,
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        )
+        .unwrap();
         assert!(trace.start_solid && !trace.all_solid);
         assert_eq!(trace.fraction, 1.0);
-        let trace = trace_point(&geometry, 0, 1, [-1.0; 3], [-1.0; 3]).unwrap();
+        let trace =
+            trace_point(&geometry, 0, BspHull::StandingPlayer, [-1.0; 3], [-1.0; 3]).unwrap();
         assert!(trace.start_solid && trace.all_solid);
-        assert!(trace_point(&geometry, 0, 1, [f32::NAN, 0.0, 0.0], [0.0; 3]).is_err());
-        assert!(trace_point(&geometry, 0, 4, [0.0; 3], [0.0; 3]).is_err());
+        assert!(
+            trace_point(
+                &geometry,
+                0,
+                BspHull::StandingPlayer,
+                [f32::NAN, 0.0, 0.0],
+                [0.0; 3]
+            )
+            .is_err()
+        );
+        assert!(trace_point(&geometry, 1, BspHull::Point, [0.0; 3], [0.0; 3]).is_err());
         geometry.clipnodes[0].children[0] = 0;
-        assert!(trace_point(&geometry, 0, 1, [1.0; 3], [1.0; 3]).is_err());
+        assert!(trace_point(&geometry, 0, BspHull::StandingPlayer, [1.0; 3], [1.0; 3]).is_err());
     }
 
     #[test]
@@ -394,31 +467,31 @@ mod tests {
                 304.0,
             ),
         ];
-        for hull in 0..4 {
+        for (hull_index, hull) in BspHull::ALL.iter().copied().enumerate() {
             for (index, (start, end)) in segments.iter().enumerate() {
                 let trace = trace_point(&geometry, 0, hull, *start, *end).unwrap();
                 let expected = hits
                     .iter()
-                    .find(|(h, i, _, _, _)| *h == hull && *i == index);
+                    .find(|(h, i, _, _, _)| *h == hull_index && *i == index);
                 if let Some((_, _, position, normal, distance)) = expected {
                     let (actual_normal, actual_distance) = trace.plane.expect("HLDS impact plane");
                     for axis in 0..3 {
                         assert!(
                             (trace.end[axis] - position[axis]).abs() < 0.001,
-                            "hull {hull}, segment {index}, position {axis}: {trace:?}"
+                            "hull {hull_index}, segment {index}, position {axis}: {trace:?}"
                         );
                         assert!(
                             (actual_normal[axis] - normal[axis]).abs() < 0.00001,
-                            "hull {hull}, segment {index}, normal {axis}: {trace:?}"
+                            "hull {hull_index}, segment {index}, normal {axis}: {trace:?}"
                         );
                     }
                     assert!(
                         (actual_distance - distance).abs() < 0.001,
-                        "hull {hull}, segment {index}: {trace:?}"
+                        "hull {hull_index}, segment {index}: {trace:?}"
                     );
                 } else {
-                    assert_eq!(trace.end, *end, "hull {hull}, segment {index}");
-                    assert_eq!(trace.plane, None, "hull {hull}, segment {index}");
+                    assert_eq!(trace.end, *end, "hull {hull_index}, segment {index}");
+                    assert_eq!(trace.plane, None, "hull {hull_index}, segment {index}");
                 }
             }
         }
@@ -466,12 +539,12 @@ mod tests {
                 [true, true, false, false],
             ],
         ];
-        for hull in 0..4 {
+        for (hull_index, hull) in BspHull::ALL.iter().copied().enumerate() {
             for (index, (start, end)) in segments.iter().enumerate() {
                 let trace = trace_point(&geometry, 0, hull, *start, *end).unwrap();
                 assert!(
-                    (trace.fraction - fractions[hull][index]).abs() < 0.00001,
-                    "hull {hull}, segment {index}: {trace:?}"
+                    (trace.fraction - fractions[hull_index][index]).abs() < 0.00001,
+                    "hull {hull_index}, segment {index}: {trace:?}"
                 );
                 assert_eq!(
                     [
@@ -480,7 +553,7 @@ mod tests {
                         trace.in_open,
                         trace.in_water
                     ],
-                    flags[hull][index]
+                    flags[hull_index][index]
                 );
             }
         }

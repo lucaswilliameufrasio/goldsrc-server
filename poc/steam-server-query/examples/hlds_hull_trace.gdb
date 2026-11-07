@@ -8,6 +8,13 @@ set $end = (float*)calloc(3, sizeof(float))
 set $trace = (trace_t*)calloc(1, sizeof(trace_t))
 python
 segments = [((-500, 1000, 0), (0, 0, 0)), ((0, 0, 0), (-500, 1000, 0)), ((-500, 1000, 0), (-500, 1000, 0)), ((0, 0, 0), (0, 0, 0)), ((100, 100, 100), (-500, 1000, 0)), ((-500, 1000, 0), (100, 100, 100))]
+for hull in range(4):
+    mins = []
+    maxs = []
+    for axis in range(3):
+        mins.append(float(gdb.parse_and_eval('sv.worldmodel->hulls[%d].clip_mins[%d]' % (hull, axis))))
+        maxs.append(float(gdb.parse_and_eval('sv.worldmodel->hulls[%d].clip_maxs[%d]' % (hull, axis))))
+    print('HLDS_HULL_BOUNDS hull=%d mins=%s maxs=%s' % (hull, mins, maxs))
 for hull in (0, 1, 2, 3):
     for start, end in segments:
         gdb.execute('call (void*)memset($trace, 0, sizeof(trace_t))', to_string=True)
