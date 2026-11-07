@@ -102,6 +102,12 @@ fn assert_bomb_target_brushes(entities: &[MapEntity], geometry: &Geometry, map_n
     for target in targets {
         assert!(target.model_index > 0);
         assert!(target.model_index < geometry.models.len());
+        for axis in 0..3 {
+            assert!(
+                target.mins[axis] < target.maxs[axis],
+                "bomb target has empty extent on axis {axis} for {map_name}"
+            );
+        }
         assert!(
             target
                 .mins

@@ -70,10 +70,10 @@ the three parsed spawn-map candidates are outside solid. This is only a static
 clearance check at the raw map origin. It does not establish the game DLL's
 runtime spawn adjustment, assign teams, choose a spawn, or instantiate a player.
 `poc/steam-server-query/src/objectives.rs` also resolves each selected-map
-`func_bomb_target` model reference to a validated non-world BSP submodel and
-its raw bounds. This validates static entity-to-geometry linkage only; it does
-not implement trigger occupancy, bomb planting/defusal, explosions, or round
-transitions.
+`func_bomb_target` model reference to a validated non-world BSP submodel with
+finite, non-empty raw bounds. This validates static entity-to-geometry linkage
+only; it does not implement trigger occupancy, bomb planting/defusal, explosions,
+or round transitions.
 
 ## Suggested native replacement phases
 

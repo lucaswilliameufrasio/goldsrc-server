@@ -63,9 +63,9 @@ fn model_reference(entity: &MapEntity, models: &[Model]) -> io::Result<BombTarge
         if !model.mins[axis].is_finite()
             || !model.maxs[axis].is_finite()
             || !model.origin[axis].is_finite()
-            || model.mins[axis] > model.maxs[axis]
+            || model.mins[axis] >= model.maxs[axis]
         {
-            return Err(invalid_bomb_target("submodel bounds are invalid"));
+            return Err(invalid_bomb_target("submodel bounds are empty or invalid"));
         }
     }
     Ok(BombTargetBrush {
@@ -177,5 +177,10 @@ mod tests {
         let mut inverted_models = [model(0), model(1)];
         inverted_models[1].mins[0] = 2.0;
         assert!(extract_bomb_target_brushes(&[inverted_target], &inverted_models).is_err());
+
+        let degenerate_target = entity(&[(b"classname", b"func_bomb_target"), (b"model", b"*1")]);
+        let mut degenerate_models = [model(0), model(1)];
+        degenerate_models[1].maxs[0] = degenerate_models[1].mins[0];
+        assert!(extract_bomb_target_brushes(&[degenerate_target], &degenerate_models).is_err());
     }
 }

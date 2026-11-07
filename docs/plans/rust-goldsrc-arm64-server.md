@@ -324,7 +324,7 @@ rate limit or production capacity; do not expose the PoC to the public internet.
   `/lib/ld-linux-aarch64.so.1`, dynamic dependencies on `libc.so.6`,
   `libpthread.so.0`, and `libdl.so.2`, and imports through `GLIBC_2.17` only.
   Its SHA-256 is
-  `7e37597f681b5ba3b5ab8a9fe9f1c2eb78b4b2283dae54588336c7b170bac2b8`.
+  `23a4b90b12e231a880b235f0caa1e41d3093cd096a32e748d2853caf4ede398c`.
   The 2.17 symbol floor was selected provisionally, not from a confirmed host
   baseline. The owner identifies the intended host as ARM64, but the authorized
   read-only SSH probe failed at name resolution, so its OS release and GLIBC
@@ -365,9 +365,9 @@ rate limit or production capacity; do not expose the PoC to the public internet.
   rootfs (`debian@sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a`).
   The initial tested ELF had SHA-256
   `d1ffff9a392644322875e47bc2a2971cd299bf0a3cd77e90e08af44fc75b60d0`. The
-  latest cross-build after resource, spawn/objective, startup-metadata and
+  latest cross-build after resource, spawn/objective validation, startup-metadata,
   loaded-map A2S reporting and peer-bound query challenges
-  (`7e37597f681b5ba3b5ab8a9fe9f1c2eb78b4b2283dae54588336c7b170bac2b8`) was
+  (`23a4b90b12e231a880b235f0caa1e41d3093cd096a32e748d2853caf4ede398c`) was
   smoke-tested again; the target loader reports `GLIBC 2.36`. With the rootfs
   and ELF mounted read-only, Docker `network none`, no published ports, and the
   program bound to `127.0.0.1:27025`, the sanitized query helper received the
@@ -417,7 +417,8 @@ rate limit or production capacity; do not expose the PoC to the public internet.
   `info_player_deathmatch` entities without assigning teams or moving a player.
   The raw optional `angle` is preserved without a default or view policy.
   `func_bomb_target` references resolve to validated non-world BSP submodels
-  and bounds. The opt-in map test parsed spawn records for the three entity
+  with finite, non-empty bounds; malformed and degenerate target bounds fail
+  closed. The opt-in map test parsed spawn records for the three entity
   candidates and launched the real PoC with each selected BSP; both listened
   only after startup logged the spawn/objective metadata. Synthetic malformed-
   input tests, formatting, Clippy, default/all-feature tests, Python suites, and
@@ -514,7 +515,7 @@ ARM64 execution remains unverified. See the updated
   bounded but has no per-peer request-rate control; these are development caps,
   not measured production capacity. A native-host x86-64 GNU release build of
   all targets/features passed on 2026-11-07 (SHA-256
-  `a71c81618bbf3120844e562153007703defe2c881c4178a352c6815d7de143ce`). That
+  `ac07fb12f3bf8fc374c59e92c652c077a9da7a0945557b39fb6ef9cd1de2cb2c`). That
   artifact imports through `GLIBC_2.34` (an artifact minimum, not a confirmed
   deployment baseline). It completed loopback A2S challenge/INFO exchanges with
   the default map and each selected local BSP; responses reported `de_dust2`
