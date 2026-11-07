@@ -17,12 +17,16 @@ internet.
 
 - [Technical plan](docs/plans/rust-goldsrc-arm64-server.md)
 - [Architecture decision](docs/decisions/rust-goldsrc-arm64-server.md)
+- [First playable mode decision](docs/decisions/stock-cs16-first-playable.md)
 - [Compatibility inventory](docs/compatibility/inventory.md)
+- [Sanitized client/HLDS capture playbook](docs/compatibility/capture-playbook.md)
+- [Proposed first gameplay scope and native capabilities](docs/plans/native-capabilities-proposal.md)
 
 ## Run the local query PoC
 
-Requires a Rust toolchain. The PoC uses `getrandom` for OS-backed connection
-challenges; it has no Steam SDK dependency yet.
+Requires a Rust toolchain. The default PoC uses `getrandom` for OS-backed
+connection challenges and does not require the Steam SDK. The opt-in
+`steam-auth` feature dynamically loads the owner's local Steamworks SDK.
 
 ```bash
 cargo run --manifest-path poc/steam-server-query/Cargo.toml
@@ -65,8 +69,13 @@ addresses. Inbound connect/unknown payloads are redacted; connect validation
 adds allowlisted outcomes and, where parsed, numeric protocol/ticket length only
 because they can contain Steam tickets or passwords. It is disabled by
 default, refuses to overwrite an existing file, and is not telemetry sent over
-the network. Keep it local; share only after reviewing/redacting it. This PoC
-trace covers this PoC only, not a separate HLDS process.
+the network. It can still contain private query payloads and peer addresses, so
+do not share it. This PoC trace covers this PoC only, not a separate HLDS
+process.
+
+Do not enable this trace for compatibility evidence or share its output. Use the
+[sanitized capture playbook](docs/compatibility/capture-playbook.md) and its
+allowlisted A2S_INFO summarizer instead; it does not retain datagrams.
 
 ### Test the connection challenge over Tailscale
 
@@ -97,14 +106,12 @@ packets, unsupported protocols/auth types, invalid challenges or ticket lengths.
 ### Next steps and prerequisites
 
 1. Test this updated validator with the official client using the command above.
-2. The owner supplied SDK 1.65 locally; x86-64 anonymous server logon is verified.
-   Applicable App ID 10 usage/redistribution permissions remain the owner's
-   responsibility, not a result of successful logon. See
+2. The owner confirmed the intended SDK use with App ID 10. Public advertising
+   is explicitly out of scope and remains disabled; see
    [Steam investigation](docs/compatibility/steam-authentication.md).
-3. Integrate the verified runtime into the Rust PoC and verify legacy player
-   ticket approval/denial with a fresh official-client connection.
-4. Verify initial authenticated netchannel with the official client, then
-   implement serverinfo, resource negotiation and a playable map slice. See
+3. Server logon and positive legacy ticket approval are verified on x86-64. The
+   initial authenticated netchannel test reaches `new` and then intentionally
+   disconnects; full sign-on and gameplay remain unimplemented. See
    [netchannel slice](docs/compatibility/authenticated-netchannel.md).
 
 The SDK has since been supplied locally, and the real x86-64 runtime has passed
@@ -121,8 +128,9 @@ This is server-login evidence only: the Rust PoC does not yet submit or validate
 player tickets in its default mode. The opt-in `steam-auth` adapter now submits
 fresh tickets to the real SDK and handles approval/denial/timeouts. Synthetic
 invalid-ticket rejection and positive approval from an official-client user test
-have been verified on x86-64. The new post-approval channel slice awaits a fresh
-official-client test; full sign-on remains unimplemented.
+have been verified on x86-64. The initial post-approval channel has also been
+verified with an official client; it intentionally disconnects after `new`.
+Full sign-on remains unimplemented.
 
 ### Test real Steam player authentication over Tailscale
 
@@ -160,6 +168,7 @@ cargo build --manifest-path poc/steam-server-query/Cargo.toml --all-features
 cargo test --manifest-path poc/steam-server-query/Cargo.toml
 cargo test --manifest-path poc/steam-server-query/Cargo.toml --all-features
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s poc/steam-auth-probe -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s poc/steam-server-query/examples -p 'test_*.py'
 git diff --check
 ```
 

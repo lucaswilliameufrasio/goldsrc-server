@@ -115,10 +115,11 @@ it to the public internet.
   Formatting, Clippy (default and all features), build, 17 default unit tests,
   20 all-feature unit tests, and the real UDP integration test passed. This is
   synthetic local evidence; an official-client rerun of this revision is pending.
-- **Researched, integration gated:** real Steam authentication requires an
-  authorized local SDK and confirmation of applicable App ID 10 permissions.
-  [Investigation and exact next actions](../compatibility/steam-authentication.md)
-  distinguish the legacy GoldSrc ticket API from modern auth-session tickets.
+- **Verified / owner-authorized:** x86-64 server logon and positive official
+  legacy-ticket approval are verified; the owner confirmed intended SDK use with
+  App ID 10 on 2026-11-07. Public advertising is explicitly out of scope and
+  remains disabled. Native ARM64 authentication is not yet verified. See the
+  [Steam investigation](../compatibility/steam-authentication.md).
 - **Verified with the supplied SDK:** the isolated Steam diagnostic loaded the
   actual x86-64 runtime, initialized with advertising disabled, and received a
   server-connected callback with logged-on state and nonzero server identity.
@@ -129,8 +130,9 @@ it to the public internet.
   Rust PoC, uses the real server identity, submits borrowed tickets without
   logging them, and handles approval/denial/timeout with bounded pending state.
   A real-SDK diagnostic verified Rust server logon and rejection of a synthetic
-  invalid ticket. Positive official-client approval requires a fresh user test.
-  Sign-on/admission are intentionally still disabled, including after approval.
+  invalid ticket. Positive official-client approval was verified on 2026-10-29;
+  a fresh rerun of the latest revision is not recorded. Sign-on/admission are
+  intentionally still disabled, including after approval.
 - **Verified with the official-client user test (2026-10-29):** the opt-in Rust
   server recorded `challenge_issued`, a redacted 452-byte connect,
   `steam_auth_pending` (protocol 48, 206-byte ticket), then `steam_auth_approved`.
@@ -295,53 +297,68 @@ it to the public internet.
   prepared netchannel/sign-on fixture tests listed above also passed. This is
   21 offline fixture checks total; the generated `fixtures/local` assets remain
   ignored, and none of these checks observes an official client's live response.
-- **ARM64 cross-target check (2026-11-07):** after adding Rust's
-  `aarch64-unknown-linux-gnu` standard-library component,
-  `cargo check --target aarch64-unknown-linux-gnu --all-targets --all-features`
-  passed. `cargo build` for that target did not link: the host `cc`/LLD was
-  selected and rejected the AArch64-specific linker option. No AArch64 linker,
-  target sysroot, Zig, or native ARM64 runtime is configured here. This is a
-  successful cross-target type-check, **not** an ARM64 binary build or runtime
-  validation. A target runtime/libc baseline and suitable linker/sysroot are
-  still required.
+- **ARM64 cross-build and ELF inspection (2026-11-07):** the all-targets
+  `aarch64-unknown-linux-gnu` check passed, then the release/all-features binary
+  linked in a rootless Debian Bookworm container using Debian's AArch64 GCC 12
+  cross-toolchain and glibc 2.36 sysroot. `file`/`readelf` confirm a dynamically
+  linked AArch64 PIE with interpreter `/lib/ld-linux-aarch64.so.1`, BuildID
+  `9ad8b7e4ac608fa478d75fd0d0ab29add8df36a4`, and direct dependencies only on
+  `libc.so.6` and `libgcc_s.so.1`. Its highest imported GLIBC symbol version is
+  `GLIBC_2.34`; this suggests a glibc 2.34 minimum for the current artifact, not
+  a confirmed deployment baseline. The actual Debian/Ubuntu target release and
+  native ARM64 runtime remain unknown; no ARM64 execution was performed.
+- **Sanitized compatibility capture tooling (2026-11-07):** added a playbook for
+  client/HLDS version metadata, query summaries, and server-side movement vectors
+  without raw packet files, plus a standard-library A2S_INFO summarizer that
+  accepts only loopback/private targets and emits allowlisted fields. Its four
+  synthetic tests pass. A one-second query to loopback port 27015 received no
+  response, so live HLDS/client evidence remains pending.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
 is confirmed by the locally acquired HLDS executable (App BuildID `15961496`,
 CS executable build `10211`); the official client build remains unknown. HLDS
-did not stay healthy enough in this container to capture a query response, and
-no client/HLDS packet fixture exists yet. The opt-in Steam adapter has now
-received positive approval and verified the initial acceptance/netchannel
+did not stay healthy enough in this container to produce a query summary, and
+no sanitized client/HLDS movement evidence exists yet. The opt-in Steam adapter
+has received positive approval and verified the initial acceptance/netchannel
 boundary with the official client. Next: implement serverinfo, resource
 negotiation and the rest of sign-on, without enabling any partial plan before
 its inputs and official-client behavior are verified.
-Applicable permissions remain the owner's responsibility. Client build
-identification and reference fixtures remain open evidence
-gaps; do not treat local synthetic tests as those fixtures.
+The owner confirmed the intended SDK/App ID 10 use and selected no public
+announcement; `SetAdvertiseServerActive(false)` remains in force. Client build
+identification and a healthy reference-HLDS query/movement capture remain open
+evidence gaps; do not treat local synthetic tests as those fixtures. The
+[sanitized capture playbook](../compatibility/capture-playbook.md) avoids raw
+packet captures and identity-bearing output.
 
 The official Steamworks API documents anonymous game-server logon and
 master-server heartbeat controls, while the local Rust adapter keeps advertising
 disabled. The existing x86-64 positive legacy-ticket test establishes technical
-authentication for that client/runtime only. App ID 10 listing eligibility,
-actual public-browser visibility, SDK/App ID permissions, and ARM64 execution
-remain unverified; see the updated
+authentication for that client/runtime only. App ID 10 listing eligibility and
+actual public-browser visibility are unverified because public listing is out
+of scope. Owner permission for private SDK/App ID 10 use is confirmed; native
+ARM64 execution remains unverified. See the updated
 [Steam investigation](../compatibility/steam-authentication.md).
 
 ## Open validation items
 
-- Confirm the precise official Steam client build/protocol and obtain a working
-  reference-HLDS query capture.
-- Confirm owner/Valve permission for SDK use with App ID 10. The official API
-  documents server logon and heartbeat controls, but App ID 10 listing
-  eligibility and actual public-browser visibility have not been tested; keep
-  advertising disabled until permission and an isolated listing test are
-  approved.
-- Obtain and review local connection/sign-on fixtures from an unmodified official
-  client and a local reference HLDS server.
-- Decide the first gameplay mode and the exact set of native features replacing
-  currently used plugins.
-- Confirm permissions for every map and asset before adding it to a distributable
-  image or FastDL bundle.
+- Confirm the precise official Steam client build/protocol and obtain a
+  sanitized query summary from a healthy reference HLDS.
+- Keep the owner-authorized Steam SDK use private and `SetAdvertiseServerActive`
+  disabled. Public listing is explicitly out of scope; no master-server or
+  browser-visibility test is required.
+- Obtain sanitized client/HLDS version and movement evidence using the
+  [capture playbook](../compatibility/capture-playbook.md); do not create/share
+  raw PCAPs or identity-bearing traces.
+- Implement the accepted stock-CS first playable mode from
+  [`stock-cs16-first-playable.md`](../decisions/stock-cs16-first-playable.md).
+  The exact current plugin inventory and native replacements remain pending.
+- Obtain the separate project's exact map directory and the server's plugin
+  inventory; local searches found no `plugins.ini`, `.amxx`, or client
+  `appmanifest_10.acf` under `/mnt/storage/projects`.
+- Use the other project's maps locally only; do not package or redistribute
+  them. Locate its exact map directory and add an exact ignore rule if it is
+  inside this checkout. Confirm rights before any future redistribution.
 - Implement a native world/session producer that binds validated map state and
   verified sign-on inputs to the currently approved Steam session; keep admission
   fail-closed until this is ready.
@@ -359,9 +376,9 @@ remain unverified; see the updated
   restart behavior.
 - Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
-  and measured load tests on ARM64 hardware. The local AArch64 all-targets check
-  passes, but linking is blocked on a target linker/sysroot and the deployment
-  libc baseline; runtime validation still requires ARM64 hardware.
+  and measured load tests on ARM64 hardware. The local AArch64 release binary
+  links and imports GLIBC symbols through 2.34, but the deployment libc baseline
+  and native ARM64 runtime validation still require confirmation.
 
 ## References
 

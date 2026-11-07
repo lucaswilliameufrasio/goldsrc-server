@@ -32,7 +32,8 @@ This is not a full GoldSrc `PM_Move` implementation. It does not decode
 `clc_move`/`usercmd`, apply movevars, accelerate, apply gravity or friction,
 categorize ground/water, jump, duck, step up stairs, track touches, recover stuck
 players, collide with moving entities, or update network-visible player state.
-There is no selected game mode, and this code is not enabled in live admission.
+The accepted first playable target is stock CS 1.6, but this code is not enabled
+in live admission.
 
 ## Verification
 

@@ -31,8 +31,10 @@ shutdown
 The success criterion was callback 101 (`SteamServersConnected_t`) together with
 `BLoggedOn()` and a nonzero `GetSteamID()`. No ticket was supplied to Steam, and
 no player was authenticated. This is not native ARM64 execution evidence or
-proof that master-list absence was externally observed. SDK permissions remain
-the owner's responsibility, not a result of successful logon.
+proof that master-list absence was externally observed. On 2026-11-07, the owner
+confirmed permission to use the Steamworks SDK with App ID 10 for this project.
+That is owner-provided authorization, not an independent legal opinion. Public
+advertising is explicitly out of scope and remains disabled.
 
 The probe's five unit tests passed, checking architecture selection/rejection,
 Linux callback packing, SDK interface negotiation strings, and invalid-library
@@ -59,10 +61,10 @@ The owner transferred the SDK to ignored `fixtures/local/steamworks-sdk/`.
   `LIBARCHIVE.xattr.com.apple.quarantine` refer to ignored macOS extended
   attributes, not missing SDK files. Metadata `._*` files are not build inputs.
 
-SDK availability is no longer the local prerequisite. Runtime loading and
-server logon have since been verified above on x86-64; actual legacy ticket
-approval and native ARM64 execution remain unverified. No SDK code was executed
-as part of the initial static inspection itself.
+SDK availability is no longer the local prerequisite. Runtime loading, server
+logon, and positive legacy-ticket approval have since been verified above on
+x86-64; native ARM64 execution remains unverified. No SDK code was executed as
+part of the initial static inspection itself.
 
 ## Findings
 
@@ -73,8 +75,9 @@ as part of the initial static inspection itself.
   `SendUserConnectAndAuthenticate` accepts the opaque blob produced by
   `ISteamUser::InitiateGameConnection`. Its immediate boolean result means basic
   checks only; wait for `GSClientApprove_t`/`GSClientDeny_t` before admission and
-  call `SendUserDisconnect` for cleanup. This is the integration to investigate
-  first, rather than pretending a modern `BeginAuthSession` ticket is equivalent.
+  call `SendUserDisconnect` for cleanup. This is the implemented and x86-64-
+  verified integration; a modern `BeginAuthSession` ticket is not treated as
+  equivalent.
 - Valve explicitly says not to mix the old user-auth API with the new API.
   A wrapper exposing only `BeginAuthSession` is not evidence of GoldSrc support.
 - The acquired reference HLDS includes an i386 `libsteam_api.so`/`steamclient.so`
@@ -87,10 +90,10 @@ as part of the initial static inspection itself.
   ticket support on that target must still be checked in the actual SDK.
 - SDK download/use is governed by the
   [Steamworks SDK Access Agreement](https://partner.steamgames.com/documentation/sdk_access_agreement/).
-  The [official download route](https://partner.steamgames.com/doc/sdk) goes through
-  Steamworks. At initial investigation this session had no authenticated access or owner confirmation
-  of applicable SDK permissions. Do not accept agreements for the owner, copy
-  SDKs from arbitrary mirrors, or request personal passwords.
+  The [official download route](https://partner.steamgames.com/doc/sdk) goes
+  through Steamworks. The owner confirmed App ID 10 use for this project on
+  2026-11-07. Do not accept agreements for the owner, copy SDKs from arbitrary
+  mirrors, or request personal passwords.
 
 ## Master-server listing and SDK terms (2026-11-07)
 
@@ -99,9 +102,10 @@ The current official
 documents `LogOnAnonymous` and the master-server heartbeat control
 `EnableHeartbeats`; the API also exposes server-advertising controls. This
 confirms that the supported SDK has a technical server-logon/listing path. It
-does **not** establish that App ID 10 will accept this independent server, that
-the server will appear in the CS 1.6 browser, or that this project's use is
-permitted. The current Rust adapter keeps advertising disabled via
+does **not** establish that App ID 10 will accept this independent server or
+that it will appear in the CS 1.6 browser. The owner confirmed the intended
+private SDK/App ID 10 use; public listing is explicitly not selected. The
+current Rust adapter keeps advertising disabled via
 `SetAdvertiseServerActive(false)`; no heartbeat or public-listing test was run.
 
 Valve's [dedicated-server distribution guidance](https://partner.steamgames.com/doc/sdk/uploading/distributing_gs)
@@ -115,42 +119,43 @@ grants a licensee local SDK use to develop its software and distribution of
 `redistributable_bin` components with that software; it also restricts reverse
 engineering and requires Steamworks-service communication through the SDK API.
 This summary is not legal advice and does not decide whether the owner's SDK
-agreement covers this independent implementation or App ID 10 usage. The owner
-must confirm that scope, and seek Valve clarification if it is ambiguous, before
-distribution or enabling master-server advertising.
+agreement covers every possible distribution scenario. The owner confirmed the
+intended local SDK/App ID 10 use on 2026-11-07. No SDK distribution or public
+advertising is authorized by that confirmation; those remain separate decisions.
 
 **Status:** legacy player-ticket approval is technically verified with one
 official client on x86-64, and official SDK documentation describes the listing
-mechanism. Native ARM64 auth, App ID 10 listing eligibility, actual browser
-appearance, and owner permission remain unverified. Keep advertising disabled
-until those gates are explicitly cleared.
+mechanism. Owner permission for the intended App ID 10 SDK use is confirmed.
+Native ARM64 auth is unverified. App ID 10 listing eligibility and actual browser
+appearance are not being tested because public listing is explicitly out of
+scope. Keep advertising disabled.
 
-## Prerequisite owned by the project owner
+## Authorization and scope
 
-The local SDK is now available as recorded above. Confirm whether using the required interfaces
-for Counter-Strike App ID 10 in this independent implementation is permitted;
-seek Valve clarification if the terms do not establish that. Do not send Steam
-credentials, player tickets, or web API keys.
+The local SDK and owner confirmation for the intended App ID 10 use are recorded
+above. This authorization covers private development/testing only; it does not
+authorize SDK redistribution or public master-server advertising. The owner
+selected **no public announcement**. Do not send Steam credentials, player
+tickets, or web API keys.
 
-SDK availability does not by itself prove this project is permitted to use App
-ID 10, that the latest SDK retains legacy ticket functions, or that logon and
-player authentication will succeed. These remain explicit validation gates.
+SDK availability and owner permission do not prove that every SDK function works
+on every architecture. Native ARM64 initialization/authentication remains an
+explicit technical validation gate.
 
-## Agent actions after the prerequisite
+## Remaining validation/actions
 
-1. Inspect SDK version, permitted redistribution boundary, interface versions,
-   supported architectures, and legacy authentication symbols/headers.
-2. Implement a narrowly scoped runtime adapter, anonymous logon, callback pump,
-   connection timeout and disconnect cleanup. Keep master listing disabled for
-   local validation and never mark the placeholder Steam ID as authenticated.
-3. Verify initialization/logon on x86-64 and native ARM64 separately. Inspect
-   real success/failure callbacks, not just successful linking.
-4. Run a fresh official-client connection. Keep the ticket opaque and transient;
-   admit only after a positive Steam approval. Verify denial/timeouts do not
-   allocate a player, and clean up sessions on disconnect/shutdown.
-5. Implement reliable netchannel and sign-on only after that authentication gate.
+1. Continue to load the owner's local SDK dynamically; do not commit or
+   redistribute it.
+2. Keep `SetAdvertiseServerActive(false)` and do not call a master-server listing
+   test. Private client↔server testing is the selected scope.
+3. Build/link for ARM64 locally and verify native SDK initialization/logon and
+   callbacks on a suitable ARM64 test host before any runtime claim.
+4. Preserve opaque in-memory ticket handling and positive Steam approval as the
+   admission prerequisite. Verify denial/timeouts and disconnect cleanup without
+   logging ticket contents or player identifiers.
+5. Continue reliable netchannel/sign-on only behind that authentication gate.
 
-## Concrete next step
+## Verification evidence
 
 ### Official-client approval evidence (2026-10-29)
 
@@ -192,7 +197,8 @@ only triggers an explicit authenticated-but-sign-on-unavailable rejection and
 Steam disconnect; it never allocates a player. Symbol/ABI and deterministic
 callback-decision tests do not stand in for a real player's positive approval.
 
-The fresh official-client approval gate has passed as recorded above. The next
-implementation slice is authenticated connection acceptance and reliable
-netchannel/sign-on, with session cleanup extended beyond this diagnostic's
-immediate post-approval rejection. Do not switch to unauthenticated admission.
+The fresh official-client approval and initial netchannel boundary have passed
+as recorded above. The server intentionally disconnects after the initial `new`
+command because sign-on/world state is not implemented. The next implementation
+slice is to complete sign-on from verified serverinfo, resource, and movement
+inputs. Do not switch to unauthenticated admission.
