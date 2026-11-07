@@ -83,6 +83,7 @@ fn local_companion_map_candidates_parse_and_contain_expected_entities() {
         }
     }
 
+    assert_eq!(non_candidate_geometry_failures, ["35hp_2"]);
     println!(
         "non_candidate_geometry_failures={}",
         non_candidate_geometry_failures.join(",")
