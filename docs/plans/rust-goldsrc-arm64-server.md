@@ -288,6 +288,15 @@ it to the public internet.
   HLDS 10211 fixtures. These validate offline message preparation and reliable
   transfer sequencing only; no sign-on packet was sent to a client and no
   official-client gameplay was verified.
+- **ARM64 cross-target check (2026-11-07):** after adding Rust's
+  `aarch64-unknown-linux-gnu` standard-library component,
+  `cargo check --target aarch64-unknown-linux-gnu --all-targets --all-features`
+  passed. `cargo build` for that target did not link: the host `cc`/LLD was
+  selected and rejected the AArch64-specific linker option. No AArch64 linker,
+  target sysroot, Zig, or native ARM64 runtime is configured here. This is a
+  successful cross-target type-check, **not** an ARM64 binary build or runtime
+  validation. A target runtime/libc baseline and suitable linker/sysroot are
+  still required.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
@@ -343,7 +352,9 @@ remain unverified; see the updated
   restart behavior.
 - Finish production readiness from the delivery slices: ARM64 and x86-64 builds,
   protocol/gameplay regressions, resource and abuse limits, graceful shutdown,
-  and measured load tests on ARM64 hardware.
+  and measured load tests on ARM64 hardware. The local AArch64 all-targets check
+  passes, but linking is blocked on a target linker/sysroot and the deployment
+  libc baseline; runtime validation still requires ARM64 hardware.
 
 ## References
 
