@@ -41,8 +41,72 @@ impl BspHull {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BspHullSelection {
+    pub hull: BspHull,
+    /// Point offset returned by GoldSrc's `SV_HullForEntity` path.
+    pub offset: [f32; 3],
+}
+
 fn invalid() -> io::Error {
     Error::new(ErrorKind::InvalidData, "invalid or excessive BSP trace")
+}
+
+/// Select a precompiled BSP hull and entity-origin offset from moving bounds.
+/// This mirrors the reference HLDS `SV_HullForEntity` BSP-model branch; it does
+/// not validate the entity's solidity or movement type.
+pub fn select_bsp_hull_for_bounds(
+    entity_origin: [f32; 3],
+    mins: [f32; 3],
+    maxs: [f32; 3],
+) -> io::Result<BspHullSelection> {
+    if !entity_origin
+        .iter()
+        .chain(mins.iter())
+        .chain(maxs.iter())
+        .all(|coordinate| coordinate.is_finite())
+    {
+        return Err(invalid());
+    }
+    for axis in 0..3 {
+        if mins[axis] > maxs[axis] {
+            return Err(invalid());
+        }
+    }
+
+    let width = maxs[0] - mins[0];
+    let height = maxs[2] - mins[2];
+    if !width.is_finite() || !height.is_finite() {
+        return Err(invalid());
+    }
+
+    let hull = if width <= 8.0 {
+        BspHull::Point
+    } else if width <= 36.0 {
+        if height <= 36.0 {
+            BspHull::CrouchedPlayer
+        } else {
+            BspHull::StandingPlayer
+        }
+    } else {
+        BspHull::Large
+    };
+
+    let (clip_mins, _) = hull.clip_bounds();
+    let mut offset = [0.0; 3];
+    for axis in 0..3 {
+        let hull_offset = if hull == BspHull::Point {
+            clip_mins[axis]
+        } else {
+            clip_mins[axis] - mins[axis]
+        };
+        offset[axis] = hull_offset + entity_origin[axis];
+        if !offset[axis].is_finite() {
+            return Err(invalid());
+        }
+    }
+
+    Ok(BspHullSelection { hull, offset })
 }
 
 #[derive(Debug, PartialEq)]
@@ -297,6 +361,40 @@ pub fn trace_point(
     Ok(trace)
 }
 
+/// Trace a translated BSP entity using GoldSrc hull selection and origin offset.
+/// `start`/`end` and the returned end position are world coordinates. Rotation,
+/// moving entities and collision between entities are not handled. The impact
+/// plane remains in model-local coordinates.
+pub fn trace_bsp_entity(
+    geometry: &Geometry,
+    model: usize,
+    entity_origin: [f32; 3],
+    mins: [f32; 3],
+    maxs: [f32; 3],
+    start: [f32; 3],
+    end: [f32; 3],
+) -> io::Result<Trace> {
+    if !start
+        .iter()
+        .chain(end.iter())
+        .all(|coordinate| coordinate.is_finite())
+    {
+        return Err(invalid());
+    }
+    let selection = select_bsp_hull_for_bounds(entity_origin, mins, maxs)?;
+    let local_start = std::array::from_fn(|axis| start[axis] - selection.offset[axis]);
+    let local_end = std::array::from_fn(|axis| end[axis] - selection.offset[axis]);
+    let mut trace = trace_point(geometry, model, selection.hull, local_start, local_end)?;
+    if trace.fraction == 1.0 {
+        trace.end = end;
+    } else {
+        for axis in 0..3 {
+            trace.end[axis] += selection.offset[axis];
+        }
+    }
+    Ok(trace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +442,109 @@ mod tests {
             assert_eq!(hull as usize, index);
             assert_eq!(hull.clip_bounds(), expected[index]);
         }
+    }
+
+    #[test]
+    fn bsp_hull_selection_and_offsets_match_hlds() {
+        let cases = [
+            ([0.0; 3], [0.0; 3], BspHull::Point, [0.0; 3]),
+            (
+                [-16.0, -16.0, -36.0],
+                [16.0, 16.0, 36.0],
+                BspHull::StandingPlayer,
+                [0.0; 3],
+            ),
+            (
+                [-16.0, -16.0, -18.0],
+                [16.0, 16.0, 18.0],
+                BspHull::CrouchedPlayer,
+                [0.0; 3],
+            ),
+            (
+                [-32.0, -32.0, -32.0],
+                [32.0, 32.0, 32.0],
+                BspHull::Large,
+                [0.0; 3],
+            ),
+            (
+                [-4.0, -4.0, -36.0],
+                [4.0, 4.0, 36.0],
+                BspHull::Point,
+                [0.0; 3],
+            ),
+            (
+                [-4.5, -4.5, -36.0],
+                [4.5, 4.5, 36.0],
+                BspHull::StandingPlayer,
+                [-11.5, -11.5, 0.0],
+            ),
+            (
+                [-18.0, -18.0, -18.0],
+                [18.0, 18.0, 18.0],
+                BspHull::CrouchedPlayer,
+                [2.0, 2.0, 0.0],
+            ),
+            (
+                [-18.5, -18.5, -36.0],
+                [18.5, 18.5, 36.0],
+                BspHull::Large,
+                [-13.5, -13.5, 4.0],
+            ),
+            (
+                [-16.0, -16.0, -18.5],
+                [16.0, 16.0, 18.5],
+                BspHull::StandingPlayer,
+                [0.0, 0.0, -17.5],
+            ),
+        ];
+        for (mins, maxs, expected_hull, expected_offset) in cases {
+            let selection = select_bsp_hull_for_bounds([0.0; 3], mins, maxs).unwrap();
+            assert_eq!(selection.hull, expected_hull);
+            assert_eq!(selection.offset, expected_offset);
+        }
+
+        assert!(select_bsp_hull_for_bounds([f32::NAN, 0.0, 0.0], [0.0; 3], [1.0; 3]).is_err());
+        assert!(select_bsp_hull_for_bounds([0.0; 3], [1.0; 3], [0.0; 3]).is_err());
+        assert!(
+            select_bsp_hull_for_bounds([0.0; 3], [-f32::MAX, 0.0, 0.0], [f32::MAX, 1.0, 1.0])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn translated_bsp_entity_trace_applies_offset_and_restores_world_end() {
+        let geometry = half_space();
+        let mins = [-16.0, -16.0, -36.0];
+        let maxs = [16.0, 16.0, 36.0];
+        let origin = [10.0, 20.0, 30.0];
+
+        let hit = trace_bsp_entity(
+            &geometry,
+            0,
+            origin,
+            mins,
+            maxs,
+            [11.0, 20.0, 30.0],
+            [9.0, 20.0, 30.0],
+        )
+        .unwrap();
+        assert_eq!(hit.fraction, 0.484375);
+        assert_eq!(hit.end, [10.03125, 20.0, 30.0]);
+        assert_eq!(hit.plane, Some(([1.0, 0.0, 0.0], 0.0)));
+
+        let miss = trace_bsp_entity(
+            &geometry,
+            0,
+            origin,
+            mins,
+            maxs,
+            [11.0, 20.0, 30.0],
+            [12.0, 20.0, 30.0],
+        )
+        .unwrap();
+        assert_eq!(miss.fraction, 1.0);
+        assert_eq!(miss.end, [12.0, 20.0, 30.0]);
+        assert!(miss.in_open);
     }
 
     #[test]
@@ -469,7 +670,9 @@ mod tests {
         ];
         for (hull_index, hull) in BspHull::ALL.iter().copied().enumerate() {
             for (index, (start, end)) in segments.iter().enumerate() {
-                let trace = trace_point(&geometry, 0, hull, *start, *end).unwrap();
+                let (mins, maxs) = hull.clip_bounds();
+                let trace =
+                    trace_bsp_entity(&geometry, 0, [0.0; 3], mins, maxs, *start, *end).unwrap();
                 let expected = hits
                     .iter()
                     .find(|(h, i, _, _, _)| *h == hull_index && *i == index);
@@ -495,6 +698,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires local HLDS map"]
+    fn translated_bsp_entity_trace_matches_hlds() {
+        let root =
+            std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR").expect("missing fixture directory");
+        let path = std::path::Path::new(&root).join("reference-hlds/cstrike/maps/de_dust2.bsp");
+        let geometry = crate::map::load_geometry(&path).unwrap();
+        let origin = [10.0, -20.0, 30.0];
+        let mins = [-16.0, -16.0, -36.0];
+        let maxs = [16.0, 16.0, 36.0];
+        let trace = trace_bsp_entity(
+            &geometry,
+            0,
+            origin,
+            mins,
+            maxs,
+            [-490.0, 980.0, 30.0],
+            [10.0, -20.0, 30.0],
+        )
+        .unwrap();
+        assert!((trace.fraction - 0.088_290_01).abs() < 0.00001);
+        let expected_end = [-445.85498, 891.70996, 30.0];
+        let (normal, distance) = trace.plane.expect("HLDS collision plane");
+        let expected_normal = [0.0, 0.24253562, 0.9701425];
+        for axis in 0..3 {
+            assert!((trace.end[axis] - expected_end[axis]).abs() < 0.001);
+            assert!((normal[axis] - expected_normal[axis]).abs() < 0.00001);
+        }
+        assert!((distance - 221.0909).abs() < 0.001);
+        assert_eq!(
+            [
+                trace.all_solid,
+                trace.start_solid,
+                trace.in_open,
+                trace.in_water
+            ],
+            [false, true, true, false]
+        );
     }
 
     #[test]
@@ -541,7 +784,9 @@ mod tests {
         ];
         for (hull_index, hull) in BspHull::ALL.iter().copied().enumerate() {
             for (index, (start, end)) in segments.iter().enumerate() {
-                let trace = trace_point(&geometry, 0, hull, *start, *end).unwrap();
+                let (mins, maxs) = hull.clip_bounds();
+                let trace =
+                    trace_bsp_entity(&geometry, 0, [0.0; 3], mins, maxs, *start, *end).unwrap();
                 assert!(
                     (trace.fraction - fractions[hull_index][index]).abs() < 0.00001,
                     "hull {hull_index}, segment {index}: {trace:?}"

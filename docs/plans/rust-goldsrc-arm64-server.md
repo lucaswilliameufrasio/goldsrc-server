@@ -223,12 +223,36 @@ it to the public internet.
   poc/steam-server-query/Cargo.toml --all-targets --all-features -- -D warnings`
   passed. With `GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local"`, the opt-in
   `world_hull_traces_match_hlds` and `impact_positions_and_planes_match_hlds`
-  tests also passed after the trace API switched to typed hulls. Other
+  tests passed again, and `translated_bsp_entity_trace_matches_hlds` passed
+  against the captured translated-entity case. Other
   fixture-dependent tests without their required captures remain ignored.
-- **Next collision slice:** capture and implement the `SV_HullForEntity`
-  origin-to-hull coordinate offset, first for static world-model player hulls,
-  and compare resulting traces with HLDS. Keep player movement and live sign-on
-  disabled until that layer is verified.
+
+### Progress (2026-11-07): translated BSP hull traces
+
+- **Captured from local Valve HLDS 10211:** `SV_HullForEntity` selects hull 0
+  for X width `<= 8`, hull 1 for X width `<= 36` and Z height `> 36`, hull 3
+  for X width `<= 36` and Z height `<= 36`, and hull 2 above width 36. Captured
+  cases at widths 8/9/36/37 returned the expected indices and offsets; standard
+  standing/crouched bounds returned zero offsets.
+- **Implemented:** `select_bsp_hull_for_bounds` validates finite, ordered bounds
+  and mirrors that selection/offset calculation. `trace_bsp_entity` converts
+  world start/end to the selected model-local hull coordinates and restores a
+  world-space end position. Rotation, entity movement and player simulation are
+  still outside this static trace API.
+- **Reference comparison passed:** `hlds_entity_hull.gdb` translated the HLDS
+  world entity to `[10, -20, 30]`, then called `SV_ClipMoveToEntity`. HLDS
+  returned fraction `0.0882900134`, end `[-445.85498046875, 891.7099609375,
+  30]`, flags `[allsolid=0, startsolid=1, inopen=1, inwater=0]`, normal
+  `[-0.0, 0.2425356209, 0.9701424837]` and distance `221.090897`. The opt-in
+  `translated_bsp_entity_trace_matches_hlds` reproduces these values within the
+  documented tolerances.
+- **Remaining gameplay foundation:** player movement and world/entity movement
+  are not implemented. The API is static and handles translation only; official
+  client sign-on remains intentionally disabled.
+- **Next implementation slice:** establish the mode-independent player movement
+  contract and implement one bounded movement tick against this verified world
+  trace. Do not connect it to sign-on or claim gameplay before the client's
+  movement inputs and resulting state have been checked against HLDS.
 
 The compatibility inventory has been started in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md). Protocol 48
@@ -266,7 +290,7 @@ gaps; do not treat local synthetic tests as those fixtures.
 - Build a playable native slice: instantiate map entities, select/spawn players,
   apply the HLDS hull-origin offset, implement player movement and hull/entity
   collision, then add the chosen mode's weapons, rounds and game rules. Current
-  BSP traces are static low-level point sweeps only.
+  translated BSP traces are static; no movement tick or live world is active.
 - Implement native operations replacing required plugins (administration,
   health/metrics, bans, ranking/history and persistence) and verify failure and
   restart behavior.

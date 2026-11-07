@@ -81,22 +81,45 @@ their `clip_mins`/`clip_maxs` were read from local HLDS 10211 at
 | `Large` | 2 | `[-32, -32, -32]` | `[32, 32, 32]` |
 | `CrouchedPlayer` | 3 | `[-16, -16, -18]` | `[16, 16, 18]` |
 
-`trace_point` takes one of these typed choices, limits recursion to 128 levels
-and total work to one million steps, and returns an error rather than a collision
-result if a bound is exceeded. Its start/end values are the direct points passed
-to GoldSrc's low-level hull trace; it does not apply the entity-origin offset in
-`SV_HullForEntity`. The opt-in `world_hull_traces_match_hlds` compares fraction
-(tolerance 1e-5) and
-flags for four synthetic segments across all four world-model hulls against
-`examples/hlds_hull_trace.gdb` on local HLDS 10211. A second opt-in test,
-`impact_positions_and_planes_match_hlds`, compares final position for 24 cases
-and normal and plane distance for the 10 impacts, including starts in solid,
-both directions and inclined planes. Tolerances are 0.001 map units for position
-and distance and 1e-5 for normals; no-impact cases require the unchanged end
-point and no plane. This is limited reference evidence, not exhaustive parity.
-Automatic posture-to-hull selection, entity-origin transforms/rotation, player
-movement, collision against moving entities and a running world remain
-unimplemented. The fixed BSP hull choices are not arbitrary box dimensions.
+`select_bsp_hull_for_bounds` mirrors the measured `SV_HullForEntity` BSP branch:
+width X `<= 8` selects hull 0; width X `<= 36` selects hull 3 when height Z is
+`<= 36`, otherwise hull 1; larger X widths select hull 2. The reference GDB
+capture checks these boundaries and the returned offsets. For standard standing
+and crouched player bounds on the world model the offset is `[0, 0, 0]`; tested
+nonstandard bounds produce the measured nonzero offsets.
+
+`trace_point` is the low-level API: it takes a typed hull and direct model-local
+start/end points, limits recursion to 128 levels and total work to one million
+steps, and returns an error rather than a collision result if a bound is
+exceeded. `trace_bsp_entity` applies the selected hull and entity-origin offset
+before tracing a translated BSP entity, then returns the end position in world
+coordinates. Its plane remains model-local. Rotated entities and collision
+against other moving entities are not implemented.
+
+The opt-in `world_hull_traces_match_hlds` compares fraction (tolerance `1e-5`)
+and flags for four segments across all four world-model hulls against
+`examples/hlds_hull_trace.gdb`. `impact_positions_and_planes_match_hlds` compares
+position for 24 traces and plane normal/distance for 10 impacts (position and
+distance tolerance `0.001`, normal tolerance `1e-5`). The new
+`translated_bsp_entity_trace_matches_hlds` compares the wrapper with HLDS
+`SV_ClipMoveToEntity` after translating the reference world entity by
+`[10, -20, 30]`: fraction `0.0882900134`, end position
+`[-445.85498, 891.70996, 30]`, and the captured impact plane/flags. The GDB
+recipe is [`hlds_entity_hull.gdb`](../../poc/steam-server-query/examples/hlds_entity_hull.gdb);
+it runs isolated with networking disabled and restores the temporary entity
+origin before exit. With the locally acquired HLDS tree and prebuilt local GDB
+image, the capture can be rerun from the repository root:
+
+```sh
+docker --context rootless run --rm --platform linux/amd64 --network none \
+  -v "$PWD/fixtures/local/reference-hlds:/data/hlds:ro" \
+  -v "$PWD/poc/steam-server-query/examples/hlds_entity_hull.gdb:/tmp/verify.gdb:ro" \
+  -w /data/hlds -e LD_LIBRARY_PATH=. goldsrc-hlds-crc-local \
+  timeout 30s gdb -q -batch -x /tmp/verify.gdb ./hlds_linux
+```
+
+These are bounded reference cases, not exhaustive parity. Player movement, live
+game state and a running world remain unimplemented.
 
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
@@ -105,6 +128,9 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --lib \
   impact_positions_and_planes_match_hlds -- --ignored
+GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
+  --manifest-path poc/steam-server-query/Cargo.toml --lib \
+  translated_bsp_entity_trace_matches_hlds -- --ignored
 ```
 
 ```sh
