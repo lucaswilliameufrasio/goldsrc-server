@@ -13,6 +13,7 @@ mod netchannel;
 mod resources;
 #[cfg(any(test, feature = "steam-auth"))]
 mod serverinfo;
+mod shutdown;
 #[cfg(any(test, feature = "steam-auth"))]
 mod signon;
 #[cfg(feature = "steam-auth")]
@@ -36,6 +37,8 @@ const PROTOCOL_VERSION: u8 = 48;
 const CHALLENGE: i32 = 0x4353_3136;
 
 fn main() -> std::io::Result<()> {
+    shutdown::install()?;
+
     let _prepared_map = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
         let (entities, crc, geometry) =
             steam_server_query_poc::map::load_world(std::path::Path::new(&path))?;
@@ -167,13 +170,27 @@ fn main() -> std::io::Result<()> {
         );
     }
     loop {
+        if shutdown::is_requested() {
+            eprintln!(
+                "Shutdown requested: stopping UDP intake; closing volatile diagnostic state."
+            );
+            return Ok(());
+        }
+
         #[cfg(feature = "steam-auth")]
         if let Some(runtime) = steam.as_mut() {
             if Instant::now() >= steam_deadline {
                 eprintln!("Steam diagnostic: session ended; cleaning up runtime");
                 return Ok(());
             }
-            for event in runtime.poll(Instant::now())? {
+            let events = runtime.poll(Instant::now())?;
+            if shutdown::is_requested() {
+                continue;
+            }
+            for event in events {
+                if shutdown::is_requested() {
+                    break;
+                }
                 eprintln!("Steam diagnostic: {}", event.outcome);
                 #[cfg(feature = "packet-trace")]
                 if let Some(trace) = packet_trace.as_mut() {
@@ -244,6 +261,10 @@ fn main() -> std::io::Result<()> {
         }
         match socket.recv_from(&mut packet) {
             Ok((packet_length, peer)) => {
+                if shutdown::is_requested() {
+                    continue;
+                }
+
                 #[cfg(feature = "packet-trace")]
                 if let Some(trace) = packet_trace.as_mut() {
                     trace.record("in", peer, &packet[..packet_length])?;
@@ -326,6 +347,7 @@ fn main() -> std::io::Result<()> {
                     }
                 }
             }
+            Err(_error) if shutdown::is_requested() => continue,
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock
                     || error.kind() == std::io::ErrorKind::TimedOut =>

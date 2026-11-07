@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Read};
 use std::net::UdpSocket;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -162,6 +162,119 @@ fn should_serve_query_and_game_challenge_over_udp() {
             let permissions = std::fs::metadata(&trace.0).unwrap().permissions().mode();
             assert_eq!(permissions & 0o777, 0o600);
         }
+    }
+}
+
+#[cfg(unix)]
+fn assert_clean_shutdown_on_signal(signal: libc::c_int) {
+    use std::time::Instant;
+
+    let reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"));
+    command
+        .env("LISTEN_ADDRESS", address.to_string())
+        .env_remove("GOLDSRC_PACKET_TRACE")
+        .env_remove("GOLDSRC_STEAM_API")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .env_remove("GOLDSRC_RESOURCE_MANIFEST")
+        .env_remove("GOLDSRC_RESOURCE_CHECKS")
+        .env_remove("GOLDSRC_RESOURCE_SPAWN_COUNT")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut server = Server(command.spawn().unwrap());
+
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let mut packet = [0_u8; 128];
+    let mut listening = false;
+    for _ in 0..40 {
+        assert!(
+            server.0.try_wait().unwrap().is_none(),
+            "server exited before readiness"
+        );
+        client
+            .send_to(b"\xff\xff\xff\xffTSource Engine Query\0", address)
+            .unwrap();
+        match client.recv_from(&mut packet) {
+            Ok((length, peer)) => {
+                assert_eq!(peer, address);
+                assert_eq!(length, 9);
+                listening = true;
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP receive failed: {error}"),
+        }
+    }
+    assert!(listening, "server never became ready on loopback");
+
+    let pid = libc::pid_t::try_from(server.0.id()).unwrap();
+    // SAFETY: the child is still owned by this test and `signal` is a
+    // termination signal selected by the test below.
+    let result = unsafe { libc::kill(pid, signal) };
+    assert_eq!(
+        result,
+        0,
+        "signal {signal} failed: {}",
+        io::Error::last_os_error()
+    );
+
+    client
+        .send_to(b"\xff\xff\xff\xffTSource Engine Query\0", address)
+        .unwrap();
+    match client.recv_from(&mut packet) {
+        Ok((length, _)) => panic!("server answered a packet after termination: {length} bytes"),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) => {}
+        Err(error) => panic!("UDP receive after termination failed: {error}"),
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = server.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "server exceeded shutdown deadline"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        status.success(),
+        "server did not exit successfully: {status}"
+    );
+
+    let mut stderr = String::new();
+    server
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.contains("Shutdown requested: stopping UDP intake"));
+}
+
+#[cfg(unix)]
+#[test]
+fn should_exit_cleanly_on_sigint_and_sigterm_without_accepting_more_packets() {
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        assert_clean_shutdown_on_signal(signal);
     }
 }
 
