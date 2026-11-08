@@ -279,11 +279,23 @@ rate limit or production capacity; do not expose the PoC to the public internet.
   and failure behavior. Client command parsing, acceleration, gravity, friction,
   ground/water state, jumping/ducking/stairs, entities and game rules remain
   separate unfinished capabilities.
-- **Next required movement evidence:** establish the actual client command and
-  persistent player-state inputs from the official client/HLDS exchange, then
-  compare one bounded movement case against HLDS. Do not infer the game mode,
-  fabricate movevars or connect the primitive to live sign-on before that
-  evidence exists.
+- **Synthetic local HLDS comparison (2026-11-07):** the first GDB symbol query
+  ran before the engine/game shared objects were loaded. At `SV_ActivateServer`,
+  GDB resolves local `SV_RunCmd`/`SV_ActivateServer` symbols in `engine_i486.so`
+  and `PM_Move` in `cstrike/dlls/cs.so`; the typed probe
+  [`hlds_pmove_wall.gdb`](../../poc/steam-server-query/examples/hlds_pmove_wall.gdb)
+  then calls `PM_Move` directly without a client or `SV_RunCmd`. The bounded
+  synthetic `de_dust2` wall impact (50 ms, `MOVETYPE_FLY`, gravity 800) returned
+  origin `[-832, -656.03125, 175]`, velocity `[0, 0, -40]` and plane normal
+  `[0, -1, 0]`. The ignored local-BSP regression test passed and confirms that
+  `slide_move` matches horizontal impact position/velocity within `0.001`; the
+  vertical difference is expected because this primitive does not apply
+  gravity. This is a collision comparison only, not a real command or gameplay
+  result.
+- **Next required movement evidence:** establish an actual client command and
+  persistent player-state inputs from an official-client/HLDS exchange, then
+  extend comparison to real player movement. Do not infer a client command or
+  connect the primitive to live sign-on before that evidence exists.
 - **Additional local sign-on fixture checks passed:** `assembled_message_matches_hlds`,
   `serverinfo_uses_crc_from_local_bsp_and_session_slot`,
   `prepared_sequence_with_local_world_inputs`,

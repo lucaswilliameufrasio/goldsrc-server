@@ -305,4 +305,35 @@ mod tests {
         assert!(slide_move(&geometry, 0, [0.0; 3], [0.0; 3], mins, maxs, f32::NAN).is_err());
         assert!(slide_move(&geometry, 0, [0.0; 3], [0.0; 3], mins, maxs, -0.1).is_err());
     }
+
+    #[test]
+    #[ignore = "requires the local de_dust2 BSP and the isolated HLDS PM_Move reference"]
+    fn matches_local_hlds_pmove_wall_impact_on_horizontal_components() {
+        let root = std::env::var_os("GOLDSRC_DELTA_REFERENCE_DIR")
+            .expect("missing local HLDS fixture directory");
+        let path = std::path::Path::new(&root).join("reference-hlds/cstrike/maps/de_dust2.bsp");
+        let geometry = crate::map::load_geometry(&path).unwrap();
+        let (mins, maxs) = player_bounds();
+
+        let result = slide_move(
+            &geometry,
+            0,
+            [-832.0, -704.0, 176.0],
+            [0.0, 1000.0, 0.0],
+            mins,
+            maxs,
+            0.05,
+        )
+        .unwrap();
+
+        // PM_Move's local synthetic reference also hits the y=-1 wall plane.
+        // Its full result includes gravity, which this collision-only primitive
+        // deliberately does not model, so compare the horizontal components.
+        assert!((result.origin[0] + 832.0).abs() < 0.001);
+        assert!((result.origin[1] + 656.03125).abs() < 0.001);
+        assert_eq!(result.velocity[0], 0.0);
+        assert_eq!(result.velocity[1], 0.0);
+        assert_eq!(result.collision_count, 1);
+        assert!(!result.all_solid);
+    }
 }
