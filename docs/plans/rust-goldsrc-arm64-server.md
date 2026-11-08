@@ -389,15 +389,17 @@ rate limit or production capacity; do not expose the PoC to the public internet.
   server shutdown contract for live players or durable operations.
 - **Current-revision fixture regression (2026-11-07):** after the shutdown,
   A2S-challenge, selected-map query and static geometry changes, the available
-  opt-in HLDS references passed again: all 9 library tests covering map/CRC/hull/
-  delta behavior and 13 binary tests covering resources, serverinfo, sign-on
-  assembly, netchannel sequencing and both selected-map wire digests. An
-  all-features UDP integration test also verified that a complete resource
-  snapshot is accepted before the listener responds while world and sign-on
-  remain disabled. The local selected-map inventory test passed (eight parser
-  successes; only `35hp_2` failed its strict geometry gate), as did the normal
-  default/all-feature suites. These remain offline checks, not client sign-on or
-  gameplay evidence.
+  opt-in all-target/all-feature fixture run passed all 9 library tests covering
+  map/CRC/hull/delta behavior, 13 binary tests covering resources, serverinfo,
+  sign-on assembly, netchannel sequencing and both selected-map wire digests,
+  the `delta_reference` example comparison, and the local map inventory test.
+  The packet-fixture exporter was intentionally skipped because it writes an
+  opt-in artifact. An all-features UDP integration test also verified that a
+  complete resource snapshot is accepted before the listener responds while
+  world and sign-on remain disabled. Eight of nine local maps passed strict
+  geometry parsing; only `35hp_2` failed that gate. The normal default/all-feature
+  suites also passed. These remain offline checks, not client sign-on or gameplay
+  evidence.
 - **Selected-map resource wire comparison (2026-11-07):** the isolated HLDS
   metadata exporter loaded `de_dust2_2x2` and `fy_pool_day` with their BSPs
   mounted read-only, `network none`, and only a temporary map-directory mount
