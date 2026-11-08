@@ -39,6 +39,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:27025";
 const DEFAULT_QUERY_MAP: &str = "de_dust2";
 const PROTOCOL_VERSION: u8 = 48;
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> std::io::Result<()> {
     shutdown::install()?;
@@ -571,7 +572,7 @@ fn encode_info_response(map_name: &str) -> Vec<u8> {
     response.extend_from_slice(&[0, 32, 0]);
     response.extend_from_slice(b"dl");
     response.extend_from_slice(&[0, 0]);
-    push_c_string(&mut response, "0.1.0");
+    push_c_string(&mut response, SERVER_VERSION);
     response
 }
 
@@ -609,8 +610,8 @@ mod tests {
     use crate::query::QueryChallenges;
 
     use super::{
-        DEFAULT_LISTEN_ADDRESS, DEFAULT_QUERY_MAP, encode_info_response, parse_listen_address,
-        query_map_name,
+        DEFAULT_LISTEN_ADDRESS, DEFAULT_QUERY_MAP, SERVER_VERSION, encode_info_response,
+        parse_listen_address, query_map_name,
     };
 
     #[test]
@@ -623,6 +624,11 @@ mod tests {
             response
                 .windows(map_name.len())
                 .any(|window| window == map_name.as_bytes())
+        );
+        assert!(
+            response
+                .windows(SERVER_VERSION.len())
+                .any(|window| window == SERVER_VERSION.as_bytes())
         );
     }
 

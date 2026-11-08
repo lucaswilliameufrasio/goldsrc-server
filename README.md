@@ -56,6 +56,64 @@ forward this port from the router to the public internet. Add
 only server-query packets; the PoC cannot accept a player or prove gameplay
 compatibility.
 
+### Release binaries and Docker image
+
+When the `v0.1.0-alpha` tag is pushed, the workflow publishes a GitHub prerelease
+with Linux amd64 and arm64 archives and SHA-256 checksums. These release builds
+use the default features only: Steam authentication, public advertising, client
+sign-on, and gameplay are disabled. Standalone binaries target the Ubuntu 24.04
+Linux userspace; use the Docker image for that matching runtime. The image is
+published to
+`ghcr.io/lucaswilliameufrasio/goldsrc-server:0.1.0-alpha`; the first GHCR package
+may need its visibility changed to public in the package settings before
+unauthenticated pulls are allowed.
+
+Download the matching archive and `SHA256SUMS` from the
+[GitHub release](https://github.com/lucaswilliameufrasio/goldsrc-server/releases/tag/v0.1.0-alpha),
+place them in the same directory, verify the archive, then unpack and run it
+locally:
+
+```bash
+set -euo pipefail
+ARCHIVE="goldsrc-server-0.1.0-alpha-linux-amd64.tar.gz"
+grep "  ${ARCHIVE}$" SHA256SUMS | sha256sum -c -
+tar -xzf "$ARCHIVE"
+./goldsrc-server
+```
+
+Use the `linux-arm64` archive instead on ARM64.
+
+To query it from a device on your private tailnet, bind only the server host's
+Tailscale IPv4 address and allow UDP 27025 from that test device in the host
+firewall and Tailscale ACL:
+
+```bash
+TS_IP="$(tailscale ip -4)" || exit 1
+test -n "$TS_IP" || exit 1
+LISTEN_ADDRESS="${TS_IP}:27025" ./goldsrc-server
+```
+
+For rootful Docker on Linux, host networking lets the process bind directly to
+the host's explicit Tailscale address; no port mapping or public router
+forwarding is needed:
+
+```bash
+TS_IP="$(tailscale ip -4)" || exit 1
+test -n "$TS_IP" || exit 1
+docker run --rm --network host \
+  --env "LISTEN_ADDRESS=${TS_IP}:27025" \
+  ghcr.io/lucaswilliameufrasio/goldsrc-server:0.1.0-alpha
+```
+
+Rootless Docker may not share the host's Tailscale network namespace; use the
+native binary above in that case, or configure a private container network and
+explicit private bind address. Do not expose UDP 27025 publicly.
+
+The release workflow runs only after a matching `v<package-version>` tag is
+pushed. It builds on native x86-64 and ARM64 runners, publishes per-architecture
+image layers, combines them under the version tag, and attaches the archives
+and checksums to a prerelease. It does not create or push the tag itself.
+
 For an opt-in local packet trace during development, create a fresh output file
 and enable the `packet-trace` feature:
 

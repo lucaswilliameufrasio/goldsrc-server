@@ -129,8 +129,13 @@ fn should_serve_query_and_game_challenge_over_udp() {
     info_request.extend_from_slice(&packet[5..9]);
     client.send_to(&info_request, address).unwrap();
     let (length, _) = client.recv_from(&mut packet).unwrap();
-    assert_eq!(length, 75);
     assert_eq!(&packet[..6], b"\xff\xff\xff\xffI0");
+    let package_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        packet[..length]
+            .windows(package_version.len())
+            .any(|window| window == package_version.as_bytes())
+    );
 
     #[cfg(feature = "packet-trace")]
     {
