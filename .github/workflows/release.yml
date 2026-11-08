@@ -154,4 +154,5 @@ jobs:
             release_args+=(--prerelease --latest=false)
           fi
           gh release create "$RELEASE_TAG" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
             "${release_args[@]}"
