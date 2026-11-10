@@ -162,6 +162,19 @@ On 2026-10-30 the official-client test produced `steam_auth_approved`,
 client reached and acknowledged this initial channel exchange. It does not prove
 serverinfo, resource negotiation, complete sign-on, or gameplay.
 
+### Official-client retest (2026-11-09)
+
+The unmodified Steam CS 1.6 client on CachyOS amd64 reported executable
+`1.1.2.7/Stdio (cstrike)`, build `10211` (`2024-10-08 01:35:13`), protocol
+`48`. The opt-in `packet-trace,steam-auth` run over the private Tailscale bind
+reached `server_connected, ready=true` with advertising disabled. A sanitized,
+local-only trace recorded a redacted connect, `steam_auth_pending` (protocol
+48), `steam_auth_approved`, `connection_accepted`, `netchan_new`, `netchan_ack`,
+and `netchan_disconnect_acked`. No ticket, Steam identity, peer address, or raw
+payload is included in this evidence. This confirms the real approval callback
+and initial channel exchange for this client/runtime; the intentional disconnect
+remains before serverinfo, resource negotiation, sign-on, and gameplay.
+
 After this boundary is verified, implement serverinfo/delta descriptions,
 resource negotiation and reliable fragmentation using a licensed local map and
 reference evidence. Do not mark gameplay complete based on accepting a socket.

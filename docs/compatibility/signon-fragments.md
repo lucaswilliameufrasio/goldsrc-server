@@ -192,14 +192,96 @@ from the CS game DLL's voice manager initialization. At the start and end of
 `sv_gpNewUserMsgs` was non-null. Disassembly of `SV_New_f` shows it walks the
 consolidated list before invoking the game DLL's `ClientConnect`; the standalone
 one-argument `SV_SendUserReg` instead reads `sv_gpNewUserMsgs`. Registration
-promotion and callback outcomes during a real client connection remain
-unverified; no fake Steam approval or game connection was performed here.
+promotion and callback outcomes during a real client connection were unverified
+for that earlier offline capture; no client connection was performed then.
 
 At the end of `SV_ActivateServer` a hardware watchpoint on `sv_gpUserMsgs`
 subsequently stopped inside `Host_Map`: the consolidated pointer changed from
 null to the then-pending list pointer. This establishes the initial map-load
 promotion for this build, not what a `ClientConnect` callback later registers
 or how a rejected/approved real client proceeds.
+
+On 2026-11-09, `examples/hlds_user_messages.gdb` captured the consolidated
+startup registry after `Host_Map` returned, using the local HLDS in a rootless,
+network-disabled container with the installation mounted read-only. The bounded
+local-only capture contained 84 registrations (unique IDs 64–147; 29 variable-
+size and 55 fixed-size), including `VoiceMask` at ID 64 with size 8. The raw TSV
+remains ignored under `fixtures/local/` and is not committed. This is static
+startup registry evidence only: it does not establish per-client registration
+promotion, `ClientConnect` callback behavior, or the complete official-client
+sign-on exchange.
+
+### Official-client registration and sign-on probes (2026-11-09–10)
+
+The official client connected to the local reference HLDS over the private
+Tailscale path. The one-shot GDB capture used `sv_lan 1`, `-nomaster`, a
+Tailscale-only published UDP port, no retained container logs, and wrote only
+bounded callback results and user-message IDs/sizes to an ignored local TSV.
+The refined probe captured one `SV_New_f` entry, 84 `SV_SendUserReg` calls, one
+`ClientConnect` entry/return, and one `SV_New_f` return. `sv_gpUserMsgs` held 84
+entries at `SV_New_f` entry. `sv_gpNewUserMsgs` held 84 at sampled send calls
+1, 2, 4, 8, 16, 32 and 64, then was empty at `ClientConnect` entry while the
+active registry still held 84. Thus the pending-to-active/list-cleared
+transition was observed on this per-client path; the callback itself made no
+`RegUserMsg` calls after instrumentation was armed. `ClientConnect` returned
+`1`. No names, client arguments, Steam identity, ticket, or packet payload were
+captured.
+
+That capture intentionally terminated the reference HLDS as soon as the first
+`SV_New_f` returned. The client remained at “Establishing network connection”
+when the server was stopped; that is consistent with this one-shot teardown and
+does not indicate a Rust-server result. These server-side calls do not prove the
+client consumed/acknowledged each registration. Raw console output was not
+retained.
+
+The follow-up capture kept the reference HLDS running after `SV_New_f` and
+stopped at the first `SV_Spawn_f` entry. It recorded one such entry after the
+accepted `ClientConnect` and `SV_New_f` return. `SV_Spawn_f` handles the
+client's `spawn` request, so this is evidence that the official client advanced
+far enough to issue the next sign-on command after the initial serverinfo and
+user-message stream. This is not an individual acknowledgment for each user
+message. The capture stops before executing the spawn handler; no reply to that
+request, resource negotiation, completed sign-on, or gameplay was observed.
+The client may remain at its connection screen because the one-shot probe stops
+the server there.
+
+A later probe continued through the client's `sendres` request. It observed one
+`SV_SendRes_f` entry, one `SV_SendResources` call, and the `SV_SendRes_f`
+return. The GDB capture then stopped the reference server; the client timed out
+after that deliberate teardown. This establishes that HLDS executed its
+resource-list response path, not that the client received or accepted the list.
+This run did not observe a later `SV_Spawn_f`; it does not negate the separate
+earlier observation of that handler. No resource download, consistency result,
+completed sign-on, or gameplay was verified.
+
+A subsequent capture kept the server running through that resource response.
+It observed one `SV_Spawn_f` entry, one `SV_WriteSpawn` entry, and the
+`SV_Spawn_f` return (`capture_status=spawn_response_processed`), in addition to
+one accepted `ClientConnect`, one `SV_SendRes_f` entry, and one
+`SV_SendResources` call. This shows the official client progressed from the
+resource-response path to a spawn request that HLDS processed through its spawn
+writer and handler return. It is not a per-resource acknowledgment, and that
+capture stopped before observing the client receive or acknowledge the spawn
+response. Complete sign-on, player movement, and gameplay remain unverified.
+
+The final extension dynamically watched the first `SV_ParseMove` call after the
+spawn handler returned. It recorded one entry and return. This is evidence that
+a client message reached the server's movement-message handler after the spawn
+path; the probe did not record the packet or any movement-command values. One
+handler return does not prove nonzero movement, sustained play, or complete
+sign-on. The reference server was stopped at that first return.
+
+A final reference-HLDS probe continued to `SV_SendEnts_f`, then the check was
+repeated in a separate official-client session. Both captures recorded one
+accepted `ClientConnect`, 84 `SV_SendUserReg` calls, and one each of `sendres`,
+`spawn`, and `SV_ParseMove`. At `SV_SendEnts_f` return, both recorded
+`connected=1`, `spawned=1`, `active=1`, and `fully_connected=1`
+(`capture_status=client_fully_connected`). Each independently establishes that
+the reference HLDS marked that session fully connected after the resource and
+spawn path. No identity, userinfo, or movement values were captured. Each
+one-shot server stopped at this handler; the result does not verify nonzero
+movement, a playable round, or gameplay, and does not enable sign-on in the Rust
+server.
 
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
@@ -427,6 +509,9 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
    for actual entity updates. The current prepared descriptions are not sent.
 3. Validate loss/retransmission and the complete exchange against the official
    client; implement any needed compression and incoming streams.
-4. Establish registration promotion and client callback behavior, and supply
-   validated live map/client/session data and resource manifests; only then
-   enable an opt-in sign-on test with the official client.
+4. Two separate official-client sessions reached the reference engine's
+   `fully_connected` state. The captures do not establish per-registration
+   acknowledgments, nonzero movement, a playable round, or gameplay. Resolve
+   exact registration-acknowledgment semantics and supply validated live
+   map/client/session data and resource manifests; only then enable an opt-in
+   Rust sign-on test with the official client.

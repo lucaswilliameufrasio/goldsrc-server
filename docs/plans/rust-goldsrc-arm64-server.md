@@ -463,16 +463,17 @@ rate limit or production capacity; do not expose the PoC to the public internet.
 The compatibility inventory in
 [`docs/compatibility/inventory.md`](../compatibility/inventory.md) records the
 observed HLDS baseline: protocol 48, App BuildID `15961496`, and CS executable
-build `10211`. The official client build remains unknown. The pinned HLDS
-container produced the query summaries above, but no sanitized client/HLDS
-movement evidence exists yet. The opt-in Steam adapter
-has received positive approval and verified the initial acceptance/netchannel
-boundary with the official client. Next: implement serverinfo, resource
+build `10211`. The unmodified official client is now identified as CachyOS
+amd64, executable `1.1.2.7/Stdio`, protocol 48; its Steam app BuildID remains
+unrecorded. The pinned HLDS container produced the query summaries above, but no
+sanitized client/HLDS movement evidence exists yet. The opt-in Steam adapter
+has received positive approval and, on 2026-11-09, the current client also
+acknowledged the initial netchannel. Next: implement serverinfo, resource
 negotiation and the rest of sign-on, without enabling any partial plan before
 its inputs and official-client behavior are verified.
 The owner confirmed the intended SDK/App ID 10 use and selected no public
-announcement; `SetAdvertiseServerActive(false)` remains in force. Client build
-identification and client/HLDS movement capture remain open evidence gaps; do
+announcement; `SetAdvertiseServerActive(false)` remains in force. Steam app
+BuildID and client/HLDS movement capture remain open evidence gaps; do
 not treat local synthetic tests as those fixtures. The
 [sanitized capture playbook](../compatibility/capture-playbook.md) avoids raw
 packet captures and identity-bearing output.
@@ -488,12 +489,12 @@ ARM64 execution remains unverified. See the updated
 
 ## Open validation items
 
-- **Blocked on the official client:** it is not installed in the inspected local
-  Steam paths. Provide an owner-controlled local client path or run the sanitized
-  [capture playbook](../compatibility/capture-playbook.md) and return its
-  allowlisted client build/protocol and movement fields. Do not create/share raw
-  PCAPs or identity-bearing traces; the isolated HLDS query summary is already
-  recorded above.
+- **Official-client evidence:** the unmodified client was tested on 2026-11-09
+  on CachyOS amd64; its executable reports `1.1.2.7/Stdio`, build `10211`,
+  protocol `48`. Steam approval and the initial Rust-PoC netchannel are verified;
+  Steam app BuildID and client-to-HLDS movement/gameplay evidence remain open.
+  Do not create/share raw PCAPs or identity-bearing traces; use the sanitized
+  [capture playbook](../compatibility/capture-playbook.md) for further evidence.
 - Keep the owner-authorized Steam SDK use private and `SetAdvertiseServerActive`
   disabled. Public listing is explicitly out of scope; no master-server or
   browser-visibility test is required.

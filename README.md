@@ -219,8 +219,11 @@ two-minute exit so SDK cleanup occurs. Possible trace outcomes include
 `steam_auth_timeout`. After approval the server sends connection acceptance,
 then recognizes the initial `new` command and explicitly disconnects because
 world sign-on is not implemented. Look for `connection_accepted`, `netchan_new`
-and `netchan_disconnect_acked` or `netchan_timeout` in the trace. Official-client
-compatibility with this new slice remains unverified until tested.
+and `netchan_disconnect_acked` or `netchan_timeout` in the sanitized trace. The
+official client verified Steam approval and this initial channel exchange on
+2026-11-09; serverinfo, resource negotiation, complete sign-on and gameplay
+remain unverified. See the
+[authenticated netchannel evidence](docs/compatibility/authenticated-netchannel.md).
 See [isolation and verification](poc/steam-auth-probe/README.md).
 
 ## Verification

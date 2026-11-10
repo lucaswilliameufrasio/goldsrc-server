@@ -9,8 +9,8 @@ the query PoC as proof of game-connection compatibility.
 
 | Target | Known | Still to record | Status |
 | --- | --- | --- | --- |
-| Official Steam CS 1.6 client | Steam app ID `10`; the target is the unmodified official client. | Steam `BuildID`, platform/OS, branch, GoldSrc executable version/build, and protocol reported by the installed client. | Not installed/found in the inspected local Steam paths; exact build unconfirmed. |
-| GoldSrc game connection | Reference HLDS reports protocol `48`, `1.1.2.7/Stdio`, build `10211`; historical version mappings are not evidence of the current Steam client's executable build. | Confirm the official client's reported protocol/build and observe negotiation behavior. | HLDS baseline observed; official-client build/protocol remains unconfirmed. |
+| Official Steam CS 1.6 client | Steam app ID `10`; unmodified Steam client on CachyOS amd64. `version`: `1.1.2.7/Stdio (cstrike)`, build `10211` (`2024-10-08 01:35:13`), protocol `48`. | Steam app `BuildID` from `appmanifest_10.acf`; movement vector against local HLDS. | Client metadata and Rust-PoC initial-channel behavior observed on 2026-11-09; two reference-HLDS sessions reached `fully_connected=1` on 2026-11-10. Rust sign-on and gameplay remain unverified. |
+| GoldSrc game connection | Reference HLDS and the official client both report protocol `48`; client executable is `1.1.2.7/Stdio`, build `10211`. | App build IDs are distinct from executable build; validate remaining sign-on inputs before any Rust sign-on test. | Rust PoC accepted the client and acknowledged the initial netchannel, then deliberately disconnected before sign-on. Two separate reference-HLDS sessions reached `fully_connected=1`. |
 | Valve HLDS reference | SteamCMD App ID `90`, app `BuildID` `15961496`; `cstrike/steam.inf` says `PatchVersion=1.1.2.7`. The executable reports protocol `48`, `1.1.2.7/Stdio (cstrike)`, build `10211` (`2024-10-08 01:34:04`). | Obtain sanitized client movement/gameplay evidence. | Acquired anonymously from Valve. A pinned amd64 HLDS container answered sanitized A2S_INFO for stock `de_dust2` and both selected local maps; query evidence does not establish gameplay. Raw packet capture is intentionally not collected. |
 | Steam server query | The Rust PoC and pinned HLDS both return Source-format A2S_INFO with protocol byte `48`. | Confirm behavior with the official Steam browser when the client is available; do not infer game-connection compatibility from query results. | Sanitized responses from both servers are recorded below. They differ in challenge behavior, `max_players`, and version; no official browser test was run. |
 
@@ -42,9 +42,9 @@ comparison only, not official-browser validation or proof of game sign-on.
 
 | Evidence item | Expected producer | Local status |
 | --- | --- | --- |
-| Sanitized client-to-HLDS challenge/connect progression (no raw bytes) | Official Steam client + Valve HLDS | Not collected |
+| Sanitized reference-HLDS callback/sign-on checkpoints (no raw bytes) | Official Steam client + Valve HLDS | Two sessions: accepted callback, 84 `SV_SendUserReg` calls, resource/spawn path, one `SV_ParseMove` call and `fully_connected=1` each; no movement values or gameplay evidence |
 | Sanitized HLDS challenge/connect response progression (no raw bytes) | Valve HLDS reference | Not collected |
-| Sign-on and first successful player join outcome summary | Official client + Valve HLDS | Not collected |
+| Sign-on and first successful player join outcome summary | Official client + Valve HLDS | Reference HLDS marked two sessions connected, spawned, active, and fully connected; playable round/gameplay not verified |
 | Server-side movement vector | Official client + Valve HLDS | Not collected |
 | Sanitized A2S_INFO summary | Local query client + Valve HLDS | Observed in an isolated amd64 container for `de_dust2`, `de_dust2_2x2`, and `fy_pool_day`; summary only, no raw packet file retained/shared |
 
@@ -62,11 +62,19 @@ authentication or admission; see the challenge slice's validation evidence.
 
 The initial inspection found no client or HLDS installation in the usual Steam
 paths. HLDS has since been acquired into the ignored
-`fixtures/local/reference-hlds/` directory; the official client is still absent.
-No sanitized client-to-HLDS connection, sign-on, or movement evidence has been
-collected; the A2S_INFO query evidence is recorded below. Raw packet/demo files
-are intentionally excluded from this workflow. Existing PoC unit tests are
-authored test vectors, not observations from an independent implementation.
+`fixtures/local/reference-hlds/` directory. On 2026-11-09 the unmodified
+official client was tested against the Rust PoC: Steam approval and the initial
+netchannel were verified, but the server deliberately disconnected before
+sign-on. On 2026-11-09–10, partial client-to-reference-HLDS sign-on progression
+was observed: `ClientConnect` accepted the client, the client issued `sendres`
+and `spawn`, and one message per session reached `SV_ParseMove`. In both
+sessions the engine marked the client `connected=1`, `spawned=1`, `active=1`,
+and `fully_connected=1`. No movement values were captured. This verifies the
+reference engine's fully-connected state in those sessions, not gameplay or a
+playable round; the Rust PoC still deliberately disconnects before sign-on. The
+A2S_INFO query evidence is recorded below. Raw packet/demo files are
+intentionally excluded from this workflow. Existing PoC unit tests are authored
+test vectors, not observations from an independent implementation.
 
 The reference executable printed the expected protocol/build information, but
 did not remain healthy for a query summary in this container: its Steam runtime
