@@ -1,1 +1,3 @@
 **/target/
+# Local SDKs, HLDS installs, maps, and sanitized/raw working fixtures stay local.
+fixtures/local/

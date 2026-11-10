@@ -1,26 +1,376 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
+
+mod connection;
+#[cfg(any(test, feature = "steam-auth"))]
+mod fragments;
+#[cfg(feature = "steam-auth")]
+mod netchannel;
+mod query;
+#[cfg(any(test, feature = "steam-auth"))]
+#[allow(dead_code)]
+mod resources;
+#[cfg(any(test, feature = "steam-auth"))]
+mod serverinfo;
+mod shutdown;
+#[cfg(any(test, feature = "steam-auth"))]
+mod signon;
+#[cfg(feature = "steam-auth")]
+mod steam;
+use connection::Connections;
+#[cfg(feature = "packet-trace")]
+use connection::{CHALLENGE_REQUEST as GAME_CHALLENGE_REQUEST, CONNECT_PREFIX};
+#[cfg(feature = "packet-trace")]
+use query::QUERY_PREFIX;
+use query::QueryChallenges;
+
+#[cfg(feature = "packet-trace")]
+use std::fs::OpenOptions;
+#[cfg(feature = "packet-trace")]
+use std::io::{BufWriter, Write};
+#[cfg(all(feature = "packet-trace", unix))]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(feature = "packet-trace")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:27025";
-const QUERY_PREFIX: &[u8] = b"\xff\xff\xff\xffTSource Engine Query\0";
+const DEFAULT_QUERY_MAP: &str = "de_dust2";
 const PROTOCOL_VERSION: u8 = 48;
-const CHALLENGE: i32 = 0x4353_3136;
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> std::io::Result<()> {
+    shutdown::install()?;
+
+    let (_prepared_map, query_map) = if let Some(path) = std::env::var_os("GOLDSRC_MAP_BSP") {
+        let map_path = Path::new(&path);
+        let query_map = query_map_name(map_path)?;
+        let (entities, crc, geometry) = steam_server_query_poc::map::load_world(map_path)?;
+        let spawns = steam_server_query_poc::spawns::extract_cs_spawn_entities(&entities)?;
+        let bomb_targets = steam_server_query_poc::objectives::extract_bomb_target_brushes(
+            &entities,
+            &geometry.models,
+        )?;
+        eprintln!(
+            "Map metadata prepared: {} entities, {} planes, {} models, {} CS spawn points, {} bomb-target brushes, CRC 0x{crc:08x}; world simulation and sign-on disabled",
+            entities.len(),
+            geometry.planes.len(),
+            geometry.models.len(),
+            spawns.len(),
+            bomb_targets.len(),
+        );
+        (
+            Some((entities, crc, geometry, spawns, bomb_targets)),
+            query_map,
+        )
+    } else {
+        (None, DEFAULT_QUERY_MAP.to_owned())
+    };
+    let query_info_response = encode_info_response(&query_map);
+    let delta_list = std::env::var_os("GOLDSRC_DELTA_LIST");
+    let delta_catalog = std::env::var_os("GOLDSRC_DELTA_CATALOG");
+    let _prepared_delta = match (delta_list, delta_catalog) {
+        (None, None) => None,
+        (Some(list), Some(catalog)) => {
+            let prepared = steam_server_query_poc::delta::load(
+                std::path::Path::new(&list),
+                std::path::Path::new(&catalog),
+            )?;
+            eprintln!(
+                "Delta metadata prepared: {} schemas, {} fields, {} bytes; callbacks not implemented; sign-on disabled",
+                prepared.schemas,
+                prepared.fields,
+                prepared.bytes.len()
+            );
+            Some(prepared)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "GOLDSRC_DELTA_LIST and GOLDSRC_DELTA_CATALOG must be supplied together",
+            ));
+        }
+    };
+    let manifest = std::env::var_os("GOLDSRC_RESOURCE_MANIFEST");
+    let checks = std::env::var_os("GOLDSRC_RESOURCE_CHECKS");
+    let spawn = std::env::var_os("GOLDSRC_RESOURCE_SPAWN_COUNT");
+    #[cfg(feature = "steam-auth")]
+    let _prepared_resources = match (manifest, checks, spawn) {
+        (None, None, None) => None,
+        (Some(manifest), Some(checks), Some(spawn)) => {
+            let spawn = spawn
+                .to_str()
+                .and_then(|value| value.parse::<u32>().ok())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid resource spawn count")
+                })?;
+            let snapshot = resources::ManifestSnapshot::load(
+                std::path::Path::new(&manifest),
+                std::path::Path::new(&checks),
+                spawn,
+            )?;
+            eprintln!(
+                "Resource snapshot prepared: {} entries; world and sign-on disabled",
+                snapshot.entries().len()
+            );
+            Some(snapshot)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "resource manifest, checks and spawn count must be supplied together",
+            ));
+        }
+    };
+    #[cfg(not(feature = "steam-auth"))]
+    if manifest.is_some() || checks.is_some() || spawn.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "resource snapshot requires --features steam-auth",
+        ));
+    }
+    #[cfg(not(feature = "steam-auth"))]
+    if std::env::var_os("GOLDSRC_STEAM_API").is_some() {
+        return Err(io::Error::other(
+            "GOLDSRC_STEAM_API requires --features steam-auth",
+        ));
+    }
+    #[cfg(not(feature = "packet-trace"))]
+    if std::env::var_os("GOLDSRC_PACKET_TRACE").is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "GOLDSRC_PACKET_TRACE requires building with --features packet-trace",
+        ));
+    }
+
     let listen_address = configured_listen_address()?;
     let socket = UdpSocket::bind(listen_address)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    println!("CS 1.6 server-query PoC listening on {listen_address}");
+    #[cfg(feature = "packet-trace")]
+    let mut packet_trace = PacketTrace::from_environment()?;
 
-    let mut packet = [0_u8; 1400];
+    println!("CS 1.6 server-query PoC listening on {listen_address}");
+    #[cfg(feature = "packet-trace")]
+    if packet_trace.is_some() {
+        eprintln!("WARNING: local packet trace enabled; captured datagrams may be sensitive");
+    }
+
+    // Hold a full UDP datagram: do not interpret a truncated packet as valid.
+    let mut packet = [0_u8; 65535];
+    let mut connections = Connections::new();
+    let mut query_challenges = QueryChallenges::new();
+    #[cfg(feature = "steam-auth")]
+    let mut sessions = netchannel::Sessions::new();
+    #[cfg(feature = "steam-auth")]
+    let mut steam = steam::Steam::from_environment()?;
+    #[cfg(feature = "steam-auth")]
+    let steam_seconds = if steam.is_some() {
+        let seconds = std::env::var("GOLDSRC_STEAM_SECONDS")
+            .unwrap_or_else(|_| "120".to_owned())
+            .parse::<u64>()
+            .map_err(|_| io::Error::other("GOLDSRC_STEAM_SECONDS must be 1..120"))?;
+        if !(1..=120).contains(&seconds) {
+            return Err(io::Error::other("GOLDSRC_STEAM_SECONDS must be 1..120"));
+        }
+        seconds
+    } else {
+        120
+    };
+    #[cfg(feature = "steam-auth")]
+    let steam_deadline = Instant::now() + Duration::from_secs(steam_seconds);
+    #[cfg(feature = "steam-auth")]
+    if steam.is_some() {
+        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+        eprintln!(
+            "Steam diagnostic enabled: advertising off, no sign-on, automatic exit in {steam_seconds} seconds"
+        );
+    }
     loop {
-        match socket.recv_from(&mut packet) {
-            Ok((packet_length, peer)) => {
-                if let Some(response) = response_for(&packet[..packet_length]) {
-                    socket.send_to(&response, peer)?;
+        if shutdown::is_requested() {
+            eprintln!(
+                "Shutdown requested: stopping UDP intake; closing volatile diagnostic state."
+            );
+            return Ok(());
+        }
+
+        #[cfg(feature = "steam-auth")]
+        if let Some(runtime) = steam.as_mut() {
+            if Instant::now() >= steam_deadline {
+                eprintln!("Steam diagnostic: session ended; cleaning up runtime");
+                return Ok(());
+            }
+            let events = runtime.poll(Instant::now())?;
+            if shutdown::is_requested() {
+                continue;
+            }
+            for event in events {
+                if shutdown::is_requested() {
+                    break;
+                }
+                eprintln!("Steam diagnostic: {}", event.outcome);
+                #[cfg(feature = "packet-trace")]
+                if let Some(trace) = packet_trace.as_mut() {
+                    trace.record_outcome(
+                        event.peer,
+                        event.outcome,
+                        None,
+                        None,
+                        event.result_code,
+                    )?;
+                }
+                let response = if event.outcome == "steam_auth_approved" {
+                    match sessions.approve_with_name(event.peer, event.player_name, Instant::now())
+                    {
+                        Ok(packet) => {
+                            #[cfg(feature = "packet-trace")]
+                            if let Some(trace) = packet_trace.as_mut() {
+                                trace.record_outcome(
+                                    event.peer,
+                                    "connection_accepted",
+                                    None,
+                                    None,
+                                    None,
+                                )?;
+                            }
+                            packet
+                        }
+                        Err(_) => {
+                            runtime.close_peer(event.peer);
+                            b"\xff\xff\xff\xff9Development session capacity reached.\n\0".to_vec()
+                        }
+                    }
+                } else if event.outcome == "steam_auth_revoked" {
+                    match sessions.revoke(event.peer, Instant::now()) {
+                        Some(packet) => packet,
+                        None => continue,
+                    }
+                } else {
+                    let mut packet = b"\xff\xff\xff\xff9".to_vec();
+                    packet.extend_from_slice(event.reason.as_bytes());
+                    packet.extend_from_slice(b"\n\0");
+                    packet
+                };
+                socket.send_to(&response, event.peer)?;
+                #[cfg(feature = "packet-trace")]
+                if let Some(trace) = packet_trace.as_mut() {
+                    trace.record("out", event.peer, &response)?;
                 }
             }
+            if let Some(identity) = runtime.server_identity() {
+                connections.set_steam_identity(identity);
+            }
+            for (peer, update) in sessions.tick(Instant::now()) {
+                if update.outcome != "netchan_close_probe" {
+                    eprintln!("Netchannel diagnostic: {}", update.outcome);
+                }
+                #[cfg(feature = "packet-trace")]
+                if let Some(trace) = packet_trace.as_mut() {
+                    trace.record_outcome(peer, update.outcome, None, None, None)?;
+                }
+                if let Some(packet) = update.packet {
+                    socket.send_to(&packet, peer)?;
+                }
+                if update.finished {
+                    runtime.close_peer(peer);
+                }
+            }
+        }
+        match socket.recv_from(&mut packet) {
+            Ok((packet_length, peer)) => {
+                if shutdown::is_requested() {
+                    continue;
+                }
+
+                #[cfg(feature = "packet-trace")]
+                if let Some(trace) = packet_trace.as_mut() {
+                    trace.record("in", peer, &packet[..packet_length])?;
+                }
+
+                #[cfg(feature = "steam-auth")]
+                if sessions.contains(peer) {
+                    if packet[..packet_length].starts_with(connection::CONNECT_PREFIX) {
+                        if let Some(response) = sessions.retry_acceptance(peer, Instant::now()) {
+                            socket.send_to(&response, peer)?;
+                        }
+                    } else if !packet[..packet_length].starts_with(&[0xff; 4])
+                        && let Some(update) =
+                            sessions.receive(peer, &packet[..packet_length], Instant::now())
+                    {
+                        eprintln!("Netchannel diagnostic: {}", update.outcome);
+                        #[cfg(feature = "packet-trace")]
+                        if let Some(trace) = packet_trace.as_mut() {
+                            trace.record_outcome(peer, update.outcome, None, None, None)?;
+                        }
+                        if let Some(response) = update.packet {
+                            socket.send_to(&response, peer)?;
+                        }
+                        if update.finished
+                            && let Some(runtime) = steam.as_mut()
+                        {
+                            runtime.close_peer(peer);
+                        }
+                    }
+                    continue;
+                }
+
+                #[cfg(feature = "steam-auth")]
+                if connection::is_challenge_request(&packet[..packet_length])
+                    && steam
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.server_identity().is_none())
+                {
+                    continue;
+                }
+
+                let response = if let Some(reply) =
+                    connections.handle(&packet[..packet_length], peer, Instant::now())?
+                {
+                    #[cfg(feature = "steam-auth")]
+                    let reply = {
+                        let mut reply = reply;
+                        if let (Some(runtime), Some(ticket)) = (steam.as_mut(), reply.ticket) {
+                            reply.outcome =
+                                runtime.submit(peer, ticket, reply.player_name, Instant::now());
+                            eprintln!("Steam diagnostic: {}", reply.outcome);
+                            if reply.outcome == "steam_auth_pending" {
+                                reply.packet = None;
+                            } else {
+                                reply.packet = Some(b"\xff\xff\xff\xff9Steam authentication could not be started.\n\0".to_vec());
+                            }
+                        }
+                        reply
+                    };
+                    #[cfg(feature = "packet-trace")]
+                    if let Some(trace) = packet_trace.as_mut() {
+                        trace.record_connection(peer, &reply)?;
+                    }
+                    reply.packet
+                } else {
+                    query_challenges.handle(
+                        &packet[..packet_length],
+                        peer,
+                        Instant::now(),
+                        &query_info_response,
+                    )?
+                };
+                if let Some(response) = response {
+                    let sent = socket.send_to(&response, peer)?;
+                    if sent != response.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "incomplete UDP response",
+                        ));
+                    }
+
+                    #[cfg(feature = "packet-trace")]
+                    if let Some(trace) = packet_trace.as_mut() {
+                        trace.record("out", peer, &response)?;
+                    }
+                }
+            }
+            Err(_error) if shutdown::is_requested() => continue,
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock
                     || error.kind() == std::io::ErrorKind::TimedOut =>
@@ -30,6 +380,131 @@ fn main() -> std::io::Result<()> {
             Err(error) => return Err(error),
         }
     }
+}
+
+#[cfg(feature = "packet-trace")]
+struct PacketTrace {
+    writer: BufWriter<std::fs::File>,
+}
+
+#[cfg(feature = "packet-trace")]
+impl PacketTrace {
+    fn record_connection(&mut self, peer: SocketAddr, reply: &connection::Reply) -> io::Result<()> {
+        self.record_outcome(
+            peer,
+            reply.outcome,
+            reply.protocol,
+            reply.ticket_length,
+            None,
+        )
+    }
+
+    fn record_outcome(
+        &mut self,
+        peer: SocketAddr,
+        outcome: &str,
+        protocol: Option<u32>,
+        ticket_length: Option<usize>,
+        result_code: Option<i32>,
+    ) -> io::Result<()> {
+        let mut metadata = String::new();
+        if let Some(protocol) = protocol {
+            metadata.push_str(&format!(",\"protocol\":{protocol}"));
+        }
+        if let Some(length) = ticket_length {
+            metadata.push_str(&format!(",\"ticket_length\":{length}"));
+        }
+        if let Some(code) = result_code {
+            metadata.push_str(&format!(",\"result_code\":{code}"));
+        }
+        writeln!(
+            self.writer,
+            "{{\"record\":\"connection_outcome\",\"peer\":\"{peer}\",\"outcome\":\"{}\"{metadata}}}",
+            outcome
+        )?;
+        self.writer.flush()
+    }
+
+    fn from_environment() -> io::Result<Option<Self>> {
+        let Some(path) = std::env::var_os("GOLDSRC_PACKET_TRACE") else {
+            return Ok(None);
+        };
+
+        if path.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "GOLDSRC_PACKET_TRACE must be a non-empty path",
+            ));
+        }
+
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path)?;
+        let mut trace = Self {
+            writer: BufWriter::new(file),
+        };
+        writeln!(
+            trace.writer,
+            "{{\"record\":\"trace_start\",\"format\":\"goldsrc-udp-trace-v1\",\"scope\":\"steam-server-query-poc\"}}"
+        )?;
+        trace.writer.flush()?;
+
+        Ok(Some(trace))
+    }
+
+    fn record(&mut self, direction: &str, peer: SocketAddr, packet: &[u8]) -> io::Result<()> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        writeln!(
+            self.writer,
+            "{}",
+            format_trace_record(timestamp, direction, peer, packet)
+        )?;
+        self.writer.flush()
+    }
+}
+
+#[cfg(feature = "packet-trace")]
+fn format_trace_record(
+    timestamp: u128,
+    direction: &str,
+    peer: SocketAddr,
+    packet: &[u8],
+) -> String {
+    // Unknown inbound packets may contain auth tickets or passwords. Fail closed.
+    if direction == "in" && !is_safe_trace_request(packet) {
+        return format!(
+            "{{\"ts_unix_ns\":{timestamp},\"direction\":\"{direction}\",\"peer\":\"{peer}\",\"payload_length\":{},\"payload_redacted\":true,\"kind\":\"{}\"}}",
+            packet.len(),
+            if packet.starts_with(CONNECT_PREFIX) {
+                "connect"
+            } else {
+                "unknown"
+            }
+        );
+    }
+
+    let mut payload_hex = String::with_capacity(packet.len() * 2);
+    for byte in packet {
+        payload_hex.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+        payload_hex.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+    }
+
+    format!(
+        "{{\"ts_unix_ns\":{timestamp},\"direction\":\"{direction}\",\"peer\":\"{peer}\",\"payload_hex\":\"{payload_hex}\"}}"
+    )
+}
+
+#[cfg(feature = "packet-trace")]
+fn is_safe_trace_request(packet: &[u8]) -> bool {
+    packet == QUERY_PREFIX
+        || (packet.starts_with(QUERY_PREFIX) && packet.len() == QUERY_PREFIX.len() + 4)
+        || packet == GAME_CHALLENGE_REQUEST
+        || packet.strip_suffix(&[0]) == Some(GAME_CHALLENGE_REQUEST)
 }
 
 fn configured_listen_address() -> io::Result<SocketAddr> {
@@ -84,50 +559,41 @@ fn is_tailscale_ipv4(address: Ipv4Addr) -> bool {
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
-fn response_for(packet: &[u8]) -> Option<Vec<u8>> {
-    if packet == QUERY_PREFIX {
-        return Some(encode_challenge());
-    }
-
-    let challenge_start = QUERY_PREFIX.len();
-    if packet.len() != challenge_start + std::mem::size_of::<i32>()
-        || !packet.starts_with(QUERY_PREFIX)
-    {
-        return None;
-    }
-
-    let challenge_bytes: [u8; 4] = packet[challenge_start..].try_into().ok()?;
-    let challenge = i32::from_le_bytes(challenge_bytes);
-    if challenge != CHALLENGE {
-        return None;
-    }
-
-    Some(encode_info_response())
-}
-
-fn encode_challenge() -> Vec<u8> {
-    let mut response = Vec::with_capacity(9);
-    response.extend_from_slice(&[0xff; 4]);
-    response.push(b'A');
-    response.extend_from_slice(&CHALLENGE.to_le_bytes());
-    response
-}
-
-fn encode_info_response() -> Vec<u8> {
+fn encode_info_response(map_name: &str) -> Vec<u8> {
     let mut response = Vec::with_capacity(128);
     response.extend_from_slice(&[0xff; 4]);
     response.push(b'I');
     response.push(PROTOCOL_VERSION);
     push_c_string(&mut response, "CS 1.6 Rust Query PoC");
-    push_c_string(&mut response, "de_dust2");
+    push_c_string(&mut response, map_name);
     push_c_string(&mut response, "cstrike");
     push_c_string(&mut response, "Counter-Strike");
     response.extend_from_slice(&10_u16.to_le_bytes());
     response.extend_from_slice(&[0, 32, 0]);
     response.extend_from_slice(b"dl");
     response.extend_from_slice(&[0, 0]);
-    push_c_string(&mut response, "0.1.0");
+    push_c_string(&mut response, SERVER_VERSION);
     response
+}
+
+fn query_map_name(path: &Path) -> io::Result<String> {
+    let map_name = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid BSP map filename"))?;
+    let map_name_bytes = map_name.as_bytes();
+    if map_name_bytes.is_empty()
+        || map_name_bytes.len() > 31
+        || !map_name_bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "BSP map filename is not a safe GoldSrc map name",
+        ));
+    }
+    Ok(map_name.to_owned())
 }
 
 fn push_c_string(output: &mut Vec<u8>, value: &str) {
@@ -138,38 +604,68 @@ fn push_c_string(output: &mut Vec<u8>, value: &str) {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::path::Path;
+    use std::time::Instant;
+
+    use crate::query::QueryChallenges;
 
     use super::{
-        CHALLENGE, DEFAULT_LISTEN_ADDRESS, QUERY_PREFIX, encode_info_response,
-        parse_listen_address, response_for,
+        DEFAULT_LISTEN_ADDRESS, DEFAULT_QUERY_MAP, SERVER_VERSION, encode_info_response,
+        parse_listen_address, query_map_name,
     };
 
     #[test]
-    fn should_issue_challenge_for_steam_query() {
-        let response = response_for(QUERY_PREFIX).expect("query should receive a challenge");
+    fn query_info_can_advertise_a_loaded_map_name() {
+        let map_name = "de_dust2_2x2";
+        let response = encode_info_response(map_name);
 
-        assert_eq!(&response[..5], &[0xff, 0xff, 0xff, 0xff, b'A']);
-        assert_eq!(&response[5..], &CHALLENGE.to_le_bytes());
+        assert_eq!(&response[..6], b"\xff\xff\xff\xffI\x30");
+        assert!(
+            response
+                .windows(map_name.len())
+                .any(|window| window == map_name.as_bytes())
+        );
+        assert!(
+            response
+                .windows(SERVER_VERSION.len())
+                .any(|window| window == SERVER_VERSION.as_bytes())
+        );
     }
 
     #[test]
-    fn should_return_server_info_for_valid_challenge() {
-        let mut request = QUERY_PREFIX.to_vec();
-        request.extend_from_slice(&CHALLENGE.to_le_bytes());
-
-        let response = response_for(&request).expect("valid challenge should receive info");
-
-        assert_eq!(response, encode_info_response());
-        assert_eq!(&response[..6], &[0xff, 0xff, 0xff, 0xff, b'I', 48]);
+    fn should_ignore_unsupported_or_malformed_game_challenges() {
+        let mut challenges = QueryChallenges::new();
+        let peer = SocketAddr::from(([127, 0, 0, 1], 27015));
+        let now = Instant::now();
+        let info_response = encode_info_response(DEFAULT_QUERY_MAP);
+        for request in [
+            b"getchallenge steam\n".as_slice(),
+            b"\xff\xff\xff\xffgetchallenge\n".as_slice(),
+            b"\xff\xff\xff\xffgetchallenge steam".as_slice(),
+            b"\xff\xff\xff\xffgetchallenge steam\nconnect x".as_slice(),
+            b"\xff\xff\xff\xffgetchallenge steam\n\0secret".as_slice(),
+        ] {
+            assert!(
+                challenges
+                    .handle(request, peer, now, &info_response)
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]
-    fn should_ignore_invalid_or_malformed_queries() {
-        let mut request = QUERY_PREFIX.to_vec();
-        request.extend_from_slice(&0_i32.to_le_bytes());
-
-        assert!(response_for(&request).is_none());
-        assert!(response_for(b"not a Steam query").is_none());
+    fn query_map_name_uses_bsp_stem_and_rejects_unsafe_names() {
+        assert_eq!(
+            query_map_name(Path::new("maps/de_dust2_2x2.bsp")).unwrap(),
+            "de_dust2_2x2"
+        );
+        assert_eq!(
+            query_map_name(Path::new("maps/cs_deathmatch-final.bsp")).unwrap(),
+            "cs_deathmatch-final"
+        );
+        assert!(query_map_name(Path::new("maps/has space.bsp")).is_err());
+        assert!(query_map_name(Path::new("maps/abcdefghijklmnopqrstuvwxyz123456.bsp")).is_err());
     }
 
     #[test]
@@ -195,5 +691,44 @@ mod tests {
         assert!(parse_listen_address("0.0.0.0:27025").is_err());
         assert!(parse_listen_address("[::]:27025").is_err());
         assert!(parse_listen_address("8.8.8.8:27025").is_err());
+    }
+}
+
+#[cfg(all(test, feature = "packet-trace"))]
+mod packet_trace_tests {
+    use super::format_trace_record;
+
+    #[test]
+    fn should_encode_trace_records_as_json_lines() {
+        let peer = "127.0.0.1:27015".parse().unwrap();
+
+        assert_eq!(
+            format_trace_record(123, "out", peer, &[0xff, b'A']),
+            r#"{"ts_unix_ns":123,"direction":"out","peer":"127.0.0.1:27015","payload_hex":"ff41"}"#
+        );
+    }
+
+    #[test]
+    fn should_redact_connect_and_unknown_inbound_payloads() {
+        let peer = "127.0.0.1:27015".parse().unwrap();
+        for packet in [
+            b"\xff\xff\xff\xffconnect 48 synthetic-ticket".as_slice(),
+            b"unknown-password".as_slice(),
+        ] {
+            let record = format_trace_record(123, "in", peer, packet);
+            assert!(record.contains("\"payload_redacted\":true"));
+            assert!(!record.contains("payload_hex"));
+            assert!(!record.contains("synthetic-ticket"));
+        }
+    }
+
+    #[test]
+    fn should_keep_safe_challenge_and_query_requests() {
+        let peer = "127.0.0.1:27015".parse().unwrap();
+        for packet in [super::GAME_CHALLENGE_REQUEST, super::QUERY_PREFIX] {
+            let record = format_trace_record(123, "in", peer, packet);
+            assert!(record.contains("payload_hex"));
+            assert!(!record.contains("payload_redacted"));
+        }
     }
 }

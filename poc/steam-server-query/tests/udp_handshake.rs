@@ -1,0 +1,420 @@
+use std::io::{self, Read};
+use std::net::UdpSocket;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+struct Server(Child);
+
+#[cfg(feature = "packet-trace")]
+struct TraceFile(std::path::PathBuf);
+
+#[cfg(feature = "packet-trace")]
+impl Drop for TraceFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn should_serve_query_and_game_challenge_over_udp() {
+    let reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"));
+    command
+        .env("LISTEN_ADDRESS", address.to_string())
+        .env_remove("GOLDSRC_PACKET_TRACE")
+        .env_remove("GOLDSRC_STEAM_API")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .env_remove("GOLDSRC_RESOURCE_MANIFEST")
+        .env_remove("GOLDSRC_RESOURCE_CHECKS")
+        .env_remove("GOLDSRC_RESOURCE_SPAWN_COUNT")
+        .stdout(Stdio::null());
+    #[cfg(feature = "packet-trace")]
+    let trace = TraceFile(std::env::temp_dir().join(format!(
+        "goldsrc-handshake-test-{}-{}.jsonl",
+        std::process::id(),
+        address.port()
+    )));
+    #[cfg(feature = "packet-trace")]
+    command.env("GOLDSRC_PACKET_TRACE", &trace.0);
+    let mut server = Server(command.spawn().unwrap());
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let request = b"\xff\xff\xff\xffgetchallenge steam\n";
+    let mut packet = [0_u8; 1400];
+    let mut received = None;
+    for _ in 0..40 {
+        assert!(
+            server.0.try_wait().unwrap().is_none(),
+            "server exited early"
+        );
+        client.send_to(request, address).unwrap();
+        match client.recv_from(&mut packet) {
+            Ok((length, peer)) => {
+                assert_eq!(peer, address);
+                received = Some(packet[..length].to_vec());
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP receive failed: {error}"),
+        }
+    }
+    let challenge_reply = received.expect("game challenge response");
+    assert!(challenge_reply.starts_with(b"\xff\xff\xff\xffA00000000 "));
+    assert!(challenge_reply.ends_with(b" 3 0 0\n\0"));
+    let challenge_text = std::str::from_utf8(&challenge_reply[4..]).unwrap();
+    let challenge: u32 = challenge_text
+        .split_ascii_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=i32::MAX as u32).contains(&challenge));
+    let mut connect = vec![0xff; 4];
+    connect.extend_from_slice(
+        format!(
+            "connect 48 {challenge} \"\\prot\\3\" \"\\name\\Test\\password\\synthetic-password\"\n"
+        )
+        .as_bytes(),
+    );
+    connect.extend_from_slice(b"synthetic-ticket");
+
+    // A different source port cannot use the first client's challenge.
+    let intruder = UdpSocket::bind("127.0.0.1:0").unwrap();
+    intruder
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    intruder.send_to(&connect, address).unwrap();
+    let (length, _) = intruder.recv_from(&mut packet).unwrap();
+    assert_eq!(
+        &packet[..length],
+        b"\xff\xff\xff\xff9Invalid or expired connection challenge.\n\0"
+    );
+
+    client.send_to(&connect, address).unwrap();
+    let (length, _) = client.recv_from(&mut packet).unwrap();
+    assert!(packet[..length].starts_with(b"\xff\xff\xff\xff9Development PoC:"));
+    assert_eq!(packet[length - 1], 0);
+
+    // The well-formed envelope consumed the token, even though auth is unavailable.
+    client.send_to(&connect, address).unwrap();
+    let (length, _) = client.recv_from(&mut packet).unwrap();
+    assert_eq!(
+        &packet[..length],
+        b"\xff\xff\xff\xff9Invalid or expired connection challenge.\n\0"
+    );
+
+    let query = b"\xff\xff\xff\xffTSource Engine Query\0";
+    client.send_to(query, address).unwrap();
+    let (length, _) = client.recv_from(&mut packet).unwrap();
+    assert_eq!(length, 9);
+    assert_eq!(&packet[..5], b"\xff\xff\xff\xffA");
+    let mut info_request = query.to_vec();
+    info_request.extend_from_slice(&packet[5..9]);
+    client.send_to(&info_request, address).unwrap();
+    let (length, _) = client.recv_from(&mut packet).unwrap();
+    assert_eq!(&packet[..6], b"\xff\xff\xff\xffI0");
+    let package_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        packet[..length]
+            .windows(package_version.len())
+            .any(|window| window == package_version.as_bytes())
+    );
+
+    #[cfg(feature = "packet-trace")]
+    {
+        let mut contents = String::new();
+        for _ in 0..40 {
+            contents = std::fs::read_to_string(&trace.0).unwrap();
+            if contents.lines().count() >= 17 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(contents.lines().count(), 17);
+        assert!(contents.contains("\"kind\":\"connect\""));
+        assert!(contents.contains("\"payload_redacted\":true"));
+        assert!(!contents.contains("73796e7468657469632d7469636b6574"));
+        assert!(!contents.contains("73796e7468657469632d70617373776f7264"));
+        assert!(contents.contains(
+            "\"outcome\":\"steam_auth_unavailable\",\"protocol\":48,\"ticket_length\":16"
+        ));
+        assert_eq!(
+            contents
+                .matches("\"outcome\":\"invalid_challenge\"")
+                .count(),
+            2
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::metadata(&trace.0).unwrap().permissions().mode();
+            assert_eq!(permissions & 0o777, 0o600);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn assert_clean_shutdown_on_signal(signal: libc::c_int) {
+    use std::time::Instant;
+
+    let reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"));
+    command
+        .env("LISTEN_ADDRESS", address.to_string())
+        .env_remove("GOLDSRC_PACKET_TRACE")
+        .env_remove("GOLDSRC_STEAM_API")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .env_remove("GOLDSRC_RESOURCE_MANIFEST")
+        .env_remove("GOLDSRC_RESOURCE_CHECKS")
+        .env_remove("GOLDSRC_RESOURCE_SPAWN_COUNT")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut server = Server(command.spawn().unwrap());
+
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let mut packet = [0_u8; 128];
+    let mut listening = false;
+    for _ in 0..40 {
+        assert!(
+            server.0.try_wait().unwrap().is_none(),
+            "server exited before readiness"
+        );
+        client
+            .send_to(b"\xff\xff\xff\xffTSource Engine Query\0", address)
+            .unwrap();
+        match client.recv_from(&mut packet) {
+            Ok((length, peer)) => {
+                assert_eq!(peer, address);
+                assert_eq!(length, 9);
+                listening = true;
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP receive failed: {error}"),
+        }
+    }
+    assert!(listening, "server never became ready on loopback");
+
+    let pid = libc::pid_t::try_from(server.0.id()).unwrap();
+    // SAFETY: the child is still owned by this test and `signal` is a
+    // termination signal selected by the test below.
+    let result = unsafe { libc::kill(pid, signal) };
+    assert_eq!(
+        result,
+        0,
+        "signal {signal} failed: {}",
+        io::Error::last_os_error()
+    );
+
+    client
+        .send_to(b"\xff\xff\xff\xffTSource Engine Query\0", address)
+        .unwrap();
+    match client.recv_from(&mut packet) {
+        Ok((length, _)) => panic!("server answered a packet after termination: {length} bytes"),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) => {}
+        Err(error) => panic!("UDP receive after termination failed: {error}"),
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = server.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "server exceeded shutdown deadline"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        status.success(),
+        "server did not exit successfully: {status}"
+    );
+
+    let mut stderr = String::new();
+    server
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.contains("Shutdown requested: stopping UDP intake"));
+}
+
+#[cfg(unix)]
+#[test]
+fn should_exit_cleanly_on_sigint_and_sigterm_without_accepting_more_packets() {
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        assert_clean_shutdown_on_signal(signal);
+    }
+}
+
+#[test]
+fn delta_configuration_must_be_complete_before_startup() {
+    let output = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"))
+        .env("GOLDSRC_DELTA_LIST", "unused")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_STEAM_API")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must be supplied together"));
+}
+
+#[test]
+fn invalid_map_is_rejected_before_listening() {
+    let output = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"))
+        .env("GOLDSRC_MAP_BSP", env!("CARGO_MANIFEST_DIR"))
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_STEAM_API")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("map is not a regular file"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
+}
+
+#[test]
+fn incomplete_resource_snapshot_is_rejected_before_listening() {
+    let output = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"))
+        .env("GOLDSRC_RESOURCE_MANIFEST", "unused")
+        .env_remove("GOLDSRC_RESOURCE_CHECKS")
+        .env_remove("GOLDSRC_RESOURCE_SPAWN_COUNT")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .env_remove("GOLDSRC_STEAM_API")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("resource"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
+}
+
+#[cfg(feature = "steam-auth")]
+#[test]
+fn should_prepare_complete_resource_snapshot_before_listening() {
+    let reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+
+    let directory = std::env::temp_dir().join(format!(
+        "goldsrc-resource-snapshot-test-{}-{}",
+        std::process::id(),
+        address.port()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    struct FixtureDirectory(std::path::PathBuf);
+    impl Drop for FixtureDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _fixture = FixtureDirectory(directory.clone());
+
+    let manifest = directory.join("manifest.tsv");
+    let checks = directory.join("checks.tsv");
+    std::fs::write(
+        &manifest,
+        format!("sound/test.wav\t0\t1\t10\t0\t{}\n", "00".repeat(32)),
+    )
+    .unwrap();
+    std::fs::write(&checks, "").unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_steam-server-query-poc"));
+    command
+        .env("LISTEN_ADDRESS", address.to_string())
+        .env("GOLDSRC_RESOURCE_MANIFEST", &manifest)
+        .env("GOLDSRC_RESOURCE_CHECKS", &checks)
+        .env("GOLDSRC_RESOURCE_SPAWN_COUNT", "1")
+        .env_remove("GOLDSRC_PACKET_TRACE")
+        .env_remove("GOLDSRC_STEAM_API")
+        .env_remove("GOLDSRC_DELTA_LIST")
+        .env_remove("GOLDSRC_DELTA_CATALOG")
+        .env_remove("GOLDSRC_MAP_BSP")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut server = Server(command.spawn().unwrap());
+
+    let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let mut packet = [0_u8; 128];
+    let mut ready = false;
+    for _ in 0..40 {
+        assert!(
+            server.0.try_wait().unwrap().is_none(),
+            "server rejected a complete resource snapshot"
+        );
+        client
+            .send_to(b"\xff\xff\xff\xffTSource Engine Query\0", address)
+            .unwrap();
+        match client.recv_from(&mut packet) {
+            Ok((length, peer)) => {
+                assert_eq!(peer, address);
+                assert_eq!(length, 9);
+                ready = true;
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP receive failed: {error}"),
+        }
+    }
+    assert!(
+        ready,
+        "server never listened with a complete resource snapshot"
+    );
+
+    server.0.kill().unwrap();
+    let _ = server.0.wait().unwrap();
+    let mut stderr = String::new();
+    server
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.contains("Resource snapshot prepared: 1 entries"));
+    assert!(stderr.contains("world and sign-on disabled"));
+}
