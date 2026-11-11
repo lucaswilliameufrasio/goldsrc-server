@@ -283,6 +283,24 @@ one-shot server stopped at this handler; the result does not verify nonzero
 movement, a playable round, or gameplay, and does not enable sign-on in the Rust
 server.
 
+### User-message acknowledgment boundary
+
+The reference-HLDS captures prove server-side registration sends and later
+sign-on progress, not that the retail client parsed each registration. As a
+protocol cross-check only, the public ReHLDS reference encodes each
+`SV_SendUserReg` record as server-to-client `svc_newusermsg` data and defines
+client-to-server `clc_*` commands without a dedicated per-registration ACK
+opcode. Its netchannel ACK is a sequence acknowledgment for outgoing packets,
+not an acknowledgment for each service message inside a packet. See ReHLDS
+[`sv_main.cpp`](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/sv_main.cpp),
+[`net.h`](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/net.h), and
+[`net_chan.cpp`](https://github.com/rehlds/ReHLDS/blob/master/rehlds/engine/net_chan.cpp).
+ReHLDS is an independent protocol-compatible implementation, not the Valve
+build-10211 client or server source. Thus the two retail-client observations of
+`sendres`, `spawn`, and `fully_connected=1` are aggregate progression evidence;
+the exact client-side parse of each registration remains unobserved. Do not
+model the pending-list clear or a netchannel ACK as per-registration acceptance.
+
 ```sh
 GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
   --manifest-path poc/steam-server-query/Cargo.toml --all-features \
@@ -510,8 +528,9 @@ GOLDSRC_DELTA_REFERENCE_DIR="$PWD/fixtures/local" cargo test \
 3. Validate loss/retransmission and the complete exchange against the official
    client; implement any needed compression and incoming streams.
 4. Two separate official-client sessions reached the reference engine's
-   `fully_connected` state. The captures do not establish per-registration
-   acknowledgments, nonzero movement, a playable round, or gameplay. Resolve
-   exact registration-acknowledgment semantics and supply validated live
-   map/client/session data and resource manifests; only then enable an opt-in
-   Rust sign-on test with the official client.
+   `fully_connected` state. The public protocol cross-check found no dedicated
+   per-registration ACK opcode, but the retail client's individual parse was
+   not instrumented. The captures also do not establish nonzero movement, a
+   playable round, or gameplay. Supply validated live map/client/session data
+   and resource manifests; only then enable an opt-in Rust sign-on test with
+   the official client.
